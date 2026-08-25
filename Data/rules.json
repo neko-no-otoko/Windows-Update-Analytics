@@ -1,0 +1,270 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "1.0.0",
+  "rules": [
+    {
+      "id": "WUD-COMPAT-APP-BLOCK",
+      "category": "Compatibility",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "An application is blocking the feature update",
+      "explanation": "Windows Setup or SetupDiag reported an actionable application compatibility block.",
+      "recommendation": "Identify the named application or residual file in the evidence, update or remove it through the vendor-supported process, then repeat the compatibility scan.",
+      "patterns": ["0xC1900208", "CompatBlockedApplication", "MOSETUP_E_COMPAT_INSTALLREQ_BLOCK"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-client/setup-upgrade-and-drivers/use-windows-setup-compatibility-scan-logs-to-identify-blocking-issues"]
+    },
+    {
+      "id": "WUD-COMPAT-SYSREQ",
+      "category": "Compatibility",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "The device does not satisfy Setup requirements",
+      "explanation": "Windows Setup returned the system-requirements compatibility block.",
+      "recommendation": "Review TPM, Secure Boot, CPU, memory, storage, boot mode, and the compatibility XML before retrying.",
+      "patterns": ["0xC1900200", "MOSETUP_E_COMPAT_SYSREQ_BLOCK", "CompatSysReq"],
+      "references": ["https://learn.microsoft.com/windows/whats-new/windows-11-requirements"]
+    },
+    {
+      "id": "WUD-COMPAT-DISKSPACE",
+      "category": "Storage",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "Windows Setup reported insufficient installation space",
+      "explanation": "The compatibility scan or SetupDiag reported that the OS or system partition lacks required free space.",
+      "recommendation": "Review the partition table and free-space evidence. Free space using an approved process; do not alter EFI or recovery partitions without a separate change plan.",
+      "patterns": ["0xC190020E", "MOSETUP_E_INSTALLDISKSPACE_BLOCK", "InsufficientSystemPartitionDiskSpaceHardblock"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/setupdiag"]
+    },
+    {
+      "id": "WUD-DRIVER-ROLLBACK",
+      "category": "Drivers",
+      "severity": "Error",
+      "confidence": "Medium",
+      "title": "Setup encountered a driver-associated rollback",
+      "explanation": "The 0xC1900101 family normally requires correlation with the extend code, SetupAPI, crash, and device evidence to identify the responsible driver.",
+      "recommendation": "Use the phase, operation, named device, SetupAPI excerpt, and dump evidence in this report to update, remove, or isolate the specific driver through its vendor-supported process.",
+      "patterns": ["0xC1900101", "FindDriverFailure", "DeviceInstallHang"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-client/setup-upgrade-and-drivers/upgrade-fails-with-error-0xc1900101-0x20017"]
+    },
+    {
+      "id": "WUD-COMPAT-MIGCHOICE",
+      "category": "Compatibility",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "The requested application-and-data migration choice is unavailable",
+      "explanation": "Windows Setup reported that the selected migration choice cannot be used with the supplied image, edition, language, or installation state.",
+      "recommendation": "Confirm that target media matches the installed architecture, edition, and system default UI language, then review the named compatibility evidence before retrying.",
+      "patterns": ["0xC1900204", "MOSETUP_E_COMPAT_MIGCHOICE_BLOCK"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-client/setup-upgrade-and-drivers/use-windows-setup-compatibility-scan-logs-to-identify-blocking-issues"]
+    },
+    {
+      "id": "WUD-COMPAT-NO-IMAGE",
+      "category": "Compatibility",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "Windows Setup could not select a matching installation image",
+      "explanation": "The media did not provide a unique applicable image for the current edition, language, architecture, and licensing state.",
+      "recommendation": "Use organization-approved media matching the installed architecture, edition, and system default UI language; do not force an unrelated image index.",
+      "patterns": ["0xC1900215", "MOSETUP_E_NO_MATCHING_INSTALL_IMAGE"],
+      "references": ["https://learn.microsoft.com/windows-hardware/manufacture/desktop/windows-setup-command-line-options"]
+    },
+    {
+      "id": "WUD-PENDING-CLEANUP",
+      "category": "Setup",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "A previous installation requires cleanup or restart",
+      "explanation": "Windows Setup reported unfinished cleanup from an earlier attempt.",
+      "recommendation": "Complete the pending restart and verify that no upgrade is still active. Preserve logs before using any approved cache-cleanup procedure.",
+      "patterns": ["0xC1900107", "cleanup operation from a previous installation"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/log-files"]
+    },
+    {
+      "id": "WUD-EULA-REQUIRED",
+      "category": "Setup",
+      "severity": "Error",
+      "confidence": "High",
+      "title": "Windows Setup required explicit EULA acceptance",
+      "explanation": "A quiet Windows 11 Setup operation was invoked without the required EULA acceptance option.",
+      "recommendation": "Correct the deployment command after confirming organizational licensing and acceptance requirements.",
+      "patterns": ["0xC190010E", "MOSETUP_E_EULA_ACCEPT_REQUIRED"],
+      "references": ["https://learn.microsoft.com/windows-hardware/manufacture/desktop/windows-setup-command-line-options?view=windows-11"]
+    },
+    {
+      "id": "WUD-SAFEOS-BOOT",
+      "category": "Setup",
+      "severity": "Error",
+      "confidence": "Medium",
+      "title": "Failure occurred during SafeOS boot preparation",
+      "explanation": "The extend code points to a SafeOS boot failure, commonly associated with storage, firmware, boot configuration, encryption, or boot-critical drivers.",
+      "recommendation": "Correlate this code with boot-critical drivers, BCD, BitLocker, storage health, and setup dump evidence in the report.",
+      "patterns": ["0x20017", "SP_EXECUTION_SAFE_OS", "Failure during the SAFE_OS phase"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/log-files"]
+    },
+    {
+      "id": "WUD-DEVICE-INSTALL",
+      "category": "Drivers",
+      "severity": "Error",
+      "confidence": "Medium",
+      "title": "A device installation operation failed",
+      "explanation": "The extend code or SetupDiag result identifies device/driver installation during first boot.",
+      "recommendation": "Review SetupAPI, problem devices, recent third-party drivers, and the matching timestamp before changing any driver.",
+      "patterns": ["0x30018", "SP_EXECUTION_OP_INSTALL_DRIVERS", "Install driver failure"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/log-files"]
+    },
+    {
+      "id": "WUD-MIGRATION-ABORT",
+      "category": "Migration",
+      "severity": "Error",
+      "confidence": "High",
+      "title": "Setup aborted while migrating data or settings",
+      "explanation": "The migration engine reported an explicit abort or abandoned an object after an error.",
+      "recommendation": "Use the affected file, registry key, profile, or application named in the evidence. Validate its health and permissions through an approved remediation before retrying.",
+      "patterns": ["Shell application requested abort", "Abandoning apply due to error", "0x4000D", "MIG.*abort"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/log-files"]
+    },
+    {
+      "id": "WUD-COMPONENT-CORRUPTION",
+      "category": "Servicing",
+      "severity": "Error",
+      "confidence": "High",
+      "title": "Component-store or package corruption was detected",
+      "explanation": "DISM, CBS, or Windows Update reported a corruption or missing-source error that can prevent feature-update servicing.",
+      "recommendation": "Review the exact CBS/DISM package and source evidence. Plan component repair separately; this diagnostic tool intentionally does not perform it.",
+      "patterns": ["0x800F081F", "0x80073712", "component store is repairable", "manifest is damaged", "ERROR_SXS_COMPONENT_STORE_CORRUPT"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-server/installing-updates-features-roles/fix-windows-update-errors"]
+    },
+    {
+      "id": "WUD-SERVICING-BOOTPARTITION",
+      "category": "Servicing",
+      "severity": "Error",
+      "confidence": "Medium",
+      "title": "Servicing could not update a boot or reserved partition",
+      "explanation": "The 0x800F0922 family can indicate reserved-partition capacity, connectivity, or servicing-finalization problems.",
+      "recommendation": "Correlate partition, network, CBS, and DISM evidence before choosing a remediation; the code alone is not specific enough.",
+      "patterns": ["0x800F0922"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-server/installing-updates-features-roles/fix-windows-update-errors"]
+    },
+    {
+      "id": "WUD-SFC-INTEGRITY",
+      "category": "Servicing",
+      "severity": "Error",
+      "confidence": "High",
+      "title": "SFC verify-only found protected-file integrity violations",
+      "explanation": "The read-only SFC verification reported protected Windows resource integrity violations. The diagnostic tool did not repair them.",
+      "recommendation": "Review the SFC and CBS evidence and use the organization's approved servicing-repair workflow outside this diagnostic tool before another feature-update attempt.",
+      "patterns": ["Windows Resource Protection found integrity violations", "Windows Resource Protection found corrupt files"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-server/installing-updates-features-roles/system-file-checker"]
+    },
+    {
+      "id": "WUD-DISM-PROVIDER",
+      "category": "Servicing",
+      "severity": "Error",
+      "confidence": "High",
+      "title": "DISM failed while servicing the upgrade image",
+      "explanation": "SetupDiag identified a DISM image-session or provider failure.",
+      "recommendation": "Use the SetupDiag message, phase, operation, and DISM log excerpt to determine whether source files, servicing state, or a provider failed.",
+      "patterns": ["DISMImageSessionFailure", "DISM provider failure", "CDISMManager"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/setupdiag"]
+    },
+    {
+      "id": "WUD-BUGCHECK",
+      "category": "Crash",
+      "severity": "Error",
+      "confidence": "Low",
+      "title": "A bug check occurred during the upgrade window",
+      "explanation": "Setup, WER, or the System event log recorded a kernel bug check. Unless SetupDiag or a setup-specific dump links it to the attempt, this remains a low-confidence temporal association.",
+      "recommendation": "Analyze setupmem.dmp or the matching minidump with approved debugging tools and correlate the blamed module with the driver inventory.",
+      "patterns": ["setupmem.dmp", "BugCheck", "bug check", "BlueScreen"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/setupdiag"]
+    },
+    {
+      "id": "WUD-STORAGE-IO",
+      "category": "Storage",
+      "severity": "Error",
+      "confidence": "Low",
+      "title": "Storage or file-system errors occurred near setup",
+      "explanation": "Setup or system evidence contains corruption, I/O, NTFS, disk, or controller errors. The finding remains low confidence until the device, timestamp, or operation correlates it to the upgrade attempt.",
+      "recommendation": "Review the named volume/device and storage-health evidence. Perform any repair or hardware action under a separate approved procedure.",
+      "patterns": ["ERROR_FILE_CORRUPT", "0x00000570", "The device.*has a bad block", "Reset to device", "NTFS.*corrupt"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/log-files"]
+    },
+    {
+      "id": "WUD-GATED-COMPAT",
+      "category": "Compatibility",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "A compatibility safeguard hold is active",
+      "explanation": "Windows compatibility intelligence indicates that this device is gated from the target release.",
+      "recommendation": "Use the safeguard ID in the report to review Windows release health. Do not bypass the hold unless your organization has separately approved and validated that risk.",
+      "patterns": ["GatedCompatBlock", "safeguard hold is active"],
+      "references": ["https://learn.microsoft.com/windows/deployment/update/safeguard-holds"]
+    },
+    {
+      "id": "WUD-WU-PROXY-DNS",
+      "category": "Update Delivery",
+      "severity": "Error",
+      "confidence": "Medium",
+      "title": "Windows Update encountered a proxy, DNS, or source-connectivity failure",
+      "explanation": "Windows Update or BITS recorded a name-resolution, proxy-authentication, timeout, or connection failure while contacting an update source.",
+      "recommendation": "Correlate the timestamp and endpoint with WinHTTP proxy, DNS, routes, time, WSUS policy, and connectivity results; change network policy only through the owning team.",
+      "patterns": ["0x8024402C", "0x8024401B", "0x80244021", "0x80240030", "0x80072EE2", "0x80072EFD", "0x80072EFE", "WINHTTP_NAME_NOT_RESOLVED"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-client/installing-updates-features-roles/common-windows-update-errors", "https://learn.microsoft.com/troubleshoot/windows-client/installing-updates-features-roles/error-0x8024402c-installing-update-feature-on-demand"]
+    },
+    {
+      "id": "WUD-WU-TLS-TIME",
+      "category": "Update Delivery",
+      "severity": "Error",
+      "confidence": "Medium",
+      "title": "Windows Update encountered a TLS, certificate, content-decoding, or clock failure",
+      "explanation": "The update transport recorded a secure-channel error commonly associated with TLS inspection/configuration, certificate trust, content decoding, or an incorrect clock.",
+      "recommendation": "Use the captured time-service, proxy, certificate-related event, and update-log evidence to identify the responsible boundary before retrying.",
+      "patterns": ["0x80072F8F", "0x80072F0D", "SEC_E_UNTRUSTED_ROOT", "CERT_E_UNTRUSTEDROOT"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-client/installing-updates-features-roles/common-windows-update-errors"]
+    },
+    {
+      "id": "WUD-WU-ORCHESTRATION",
+      "category": "Update Delivery",
+      "severity": "Error",
+      "confidence": "Medium",
+      "title": "Windows Update failed an offer, download, or installation operation",
+      "explanation": "Windows Update or BITS recorded a failure affecting all updates, downloaded content, or update installation orchestration.",
+      "recommendation": "Identify the update ID and timestamp in WindowsUpdate.log and event evidence, then correlate servicing, security-agent, storage, and source-ownership signals.",
+      "patterns": ["0x80240022", "0x80246007", "0x8024200D", "WU_E_ALL_UPDATES_FAILED", "WU_E_DM_NOTDOWNLOADED"],
+      "references": ["https://learn.microsoft.com/troubleshoot/windows-client/installing-updates-features-roles/common-windows-update-errors"]
+    },
+    {
+      "id": "WUD-BITLOCKER-BLOCK",
+      "category": "Security",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "SetupDiag reported a BitLocker compatibility block",
+      "explanation": "The target or current encryption configuration prevented Setup from proceeding.",
+      "recommendation": "Review BitLocker state and any third-party encryption filter drivers. Never expose recovery passwords in the diagnostic package.",
+      "patterns": ["BitLockerHardblock", "encryption driver"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/setupdiag"]
+    },
+    {
+      "id": "WUD-AUDIT-SAFE-VHD",
+      "category": "Compatibility",
+      "severity": "Blocker",
+      "confidence": "High",
+      "title": "The current boot state does not support an in-place upgrade",
+      "explanation": "SetupDiag reported Safe Mode, Audit Mode, Windows To Go, or VHD boot as a hard block.",
+      "recommendation": "Return the device to a supported normal boot state through an approved procedure before retrying.",
+      "patterns": ["SafeModeHardblock", "AuditModeHardblock", "VHDHardblock", "PortableWorkspaceHardblock"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/setupdiag"]
+    },
+    {
+      "id": "WUD-SETUP-FATAL",
+      "category": "Setup",
+      "severity": "Error",
+      "confidence": "Medium",
+      "title": "Windows Setup recorded a fatal error",
+      "explanation": "A fatal or explicit rollback entry was found but requires its adjacent evidence to identify the responsible component.",
+      "recommendation": "Start with the last fatal entry for this attempt and follow its code, phase, operation, and correlated evidence shown in the report.",
+      "patterns": ["Fatal Error", "SetupPlatform:.*failure", "Initiating rollback", "Rollback due to"],
+      "references": ["https://learn.microsoft.com/windows/deployment/upgrade/log-files"]
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:win11upgradediag:summary:1.0.0",
+  "title": "Win11UpgradeDiag Summary",
+  "description": "Stable fleet-ingestion contract for a finalized Win11UpgradeDiag run.",
+  "type": "object",
+  "required": [
+    "SchemaVersion",
+    "SchemaSemanticVersion",
+    "ToolVersion",
+    "RuleCatalogVersion",
+    "TargetMapVersion",
+    "RunId",
+    "Run",
+    "Timestamps",
+    "Sensitive",
+    "Outcome",
+    "ExitCode",
+    "Device",
+    "SourceOs",
+    "CurrentOs",
+    "TargetOs",
+    "PrimaryFinding",
+    "Findings",
+    "FindingCounts",
+    "Attempts",
+    "CollectionCoverage",
+    "CollectionGaps",
+    "CollectionComplete",
+    "ArtifactHashes",
+    "Persistence"
+  ],
+  "properties": {
+    "SchemaVersion": { "const": 1 },
+    "SchemaSemanticVersion": { "const": "1.0.0" },
+    "ToolVersion": { "type": "string", "minLength": 1 },
+    "RuleCatalogVersion": { "type": "string", "minLength": 1 },
+    "TargetMapVersion": { "type": "string", "minLength": 1 },
+    "RunId": { "type": "string", "minLength": 1 },
+    "Mode": { "type": "string" },
+    "PhaseLabel": { "type": "string" },
+    "StartedUtc": { "$ref": "#/$defs/nullableTimestamp" },
+    "CompletedUtc": { "$ref": "#/$defs/nullableTimestamp" },
+    "Run": {
+      "type": "object",
+      "required": ["RunId", "Mode", "PhaseLabel", "ComputerName", "StartedUtc", "CompletedUtc"],
+      "properties": {
+        "RunId": { "type": "string" },
+        "Mode": { "type": "string" },
+        "PhaseLabel": { "type": "string" },
+        "ComputerName": { "$ref": "#/$defs/nullableString" },
+        "StartedUtc": { "$ref": "#/$defs/nullableTimestamp" },
+        "CompletedUtc": { "$ref": "#/$defs/nullableTimestamp" }
+      },
+      "additionalProperties": true
+    },
+    "Timestamps": {
+      "type": "object",
+      "required": ["StartedUtc", "CompletedUtc"],
+      "properties": {
+        "StartedUtc": { "$ref": "#/$defs/nullableTimestamp" },
+        "CompletedUtc": { "$ref": "#/$defs/nullableTimestamp" }
+      },
+      "additionalProperties": true
+    },
+    "Sensitive": { "const": true },
+    "Outcome": {
+      "enum": ["Ready", "Attention Required", "Blocked", "Upgrade Succeeded", "Rolled Back", "Failed", "Unknown"]
+    },
+    "ExitCode": { "enum": [0, 10, 20, 30] },
+    "Device": {
+      "type": "object",
+      "required": ["ComputerName", "Domain", "Manufacturer", "Model", "SerialNumber", "UUID"],
+      "additionalProperties": true
+    },
+    "SourceOs": { "$ref": "#/$defs/osIdentity" },
+    "CurrentOs": { "$ref": "#/$defs/osIdentity" },
+    "TargetOs": {
+      "type": "object",
+      "required": ["Product", "DisplayVersion", "BuildFamily"],
+      "properties": {
+        "Product": { "$ref": "#/$defs/nullableString" },
+        "DisplayVersion": { "type": "string" },
+        "BuildFamily": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "PrimaryFinding": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/finding" }
+      ]
+    },
+    "Findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "FindingCounts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "Attempts": { "type": "array", "items": { "type": "object" } },
+    "CollectionCoverage": { "type": "array", "items": { "$ref": "#/$defs/collectorRecord" } },
+    "CollectionGaps": { "type": "array", "items": { "$ref": "#/$defs/collectionGap" } },
+    "CollectionComplete": { "type": "boolean" },
+    "ArtifactHashes": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+    "Persistence": { "type": ["object", "null"] }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "nullableString": { "type": ["string", "null"] },
+    "nullableTimestamp": { "type": ["string", "null"], "format": "date-time" },
+    "osIdentity": {
+      "type": "object",
+      "required": ["Product", "Edition", "DisplayVersion", "Build", "UBR"],
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["Reference", "SourcePath", "Excerpt"],
+      "properties": {
+        "Reference": { "type": "string", "minLength": 1 },
+        "SourcePath": { "type": "string", "minLength": 1 },
+        "Line": { "type": ["integer", "null"] },
+        "TimestampUtc": { "$ref": "#/$defs/nullableTimestamp" },
+        "Excerpt": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "FindingId", "RuleId", "Severity", "Confidence", "Status", "Category", "Title",
+        "Summary", "WhyItMatters", "Recommendation", "Codes", "Evidence", "MicrosoftReferences"
+      ],
+      "properties": {
+        "FindingId": { "type": "string", "minLength": 1 },
+        "RuleId": { "type": "string", "minLength": 1 },
+        "Severity": { "enum": ["Blocker", "Error", "Warning", "Information"] },
+        "Confidence": { "enum": ["High", "Medium", "Low"] },
+        "Status": { "enum": ["Active", "Historical"] },
+        "Category": { "type": "string" },
+        "Title": { "type": "string" },
+        "Summary": { "type": "string" },
+        "WhyItMatters": { "type": "string" },
+        "Recommendation": { "type": "string" },
+        "Phase": { "$ref": "#/$defs/nullableString" },
+        "Operation": { "$ref": "#/$defs/nullableString" },
+        "ResultCode": { "$ref": "#/$defs/nullableString" },
+        "ExtendCode": { "$ref": "#/$defs/nullableString" },
+        "Codes": { "type": "array", "items": { "type": "string" } },
+        "AffectedEntity": { "$ref": "#/$defs/nullableString" },
+        "Evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } },
+        "MicrosoftReferences": { "type": "array", "items": { "type": "string", "format": "uri" } }
+      },
+      "additionalProperties": true
+    },
+    "collectorRecord": {
+      "type": "object",
+      "required": ["Id", "Status", "StartedUtc", "EndedUtc", "DurationMs"],
+      "additionalProperties": true
+    },
+    "collectionGap": {
+      "type": "object",
+      "required": ["Collector", "Source", "Status", "Impact"],
+      "properties": {
+        "Impact": { "enum": ["Optional", "Material"] }
+      },
+      "additionalProperties": true
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["Name", "Length", "LastWriteUtc", "Sha256"],
+      "properties": {
+        "Name": { "type": "string" },
+        "Length": { "type": "integer", "minimum": 0 },
+        "LastWriteUtc": { "type": "string", "format": "date-time" },
+        "Sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "configurationVersion": "1.0.0",
+  "eventLookbackDays": 30,
+  "maximumTextParseBytes": 536870912,
+  "maximumEvidenceMatchesPerRule": 25,
+  "timeoutsSeconds": {
+    "defaultCommand": 600,
+    "dismScanHealth": 3600,
+    "sfcVerifyOnly": 3600,
+    "appraiser": 1800,
+    "setupDiag": 2700,
+    "compatibilityScan": 7200,
+    "windowsUpdateLog": 1800,
+    "copyToShare": 1800
+  },
+  "setupDiagDownloadUrl": "https://go.microsoft.com/fwlink/?linkid=870142",
+  "connectivityEndpoints": [
+    "https://adl.windows.com/",
+    "https://download.windowsupdate.com/",
+    "https://go.microsoft.com/fwlink/?linkid=870142"
+  ],
+  "minimumRecommendedOsFreeBytes": 32212254720,
+  "minimumStagingReserveBytes": 1073741824,
+  "maximumDefaultDumpBytes": 2147483648
+}

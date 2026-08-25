@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "mapVersion": "1.0.0",
+  "targets": [
+    {
+      "displayVersion": "25H2",
+      "product": "Windows 11",
+      "buildFamily": 26200,
+      "minimumSourceBuild": 22000,
+      "preferredSourceVersions": ["23H2", "24H2"],
+      "releaseHealthUrl": "https://learn.microsoft.com/windows/release-health/status-windows-11-25h2",
+      "releaseInfoUrl": "https://learn.microsoft.com/windows/release-health/windows11-release-information",
+      "compatibilityKeyHints": ["GE25H2", "NI25H2", "25H2"]
+    }
+  ]
+}

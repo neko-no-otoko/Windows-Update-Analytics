@@ -1,0 +1,8 @@
+{
+  "ProfileName": "CompatBlockedApplicationManualUninstall",
+  "ErrorCode": "0xC1900208",
+  "LastPhase": "Downlevel",
+  "LastOperation": "Compatibility scan",
+  "Message": "CompatBlockedApplication: Contoso Legacy Filter <script>alert('fixture')</script> must be removed manually before Setup can continue.",
+  "Remediation": "Update or remove the application and repeat the compatibility scan."
+}

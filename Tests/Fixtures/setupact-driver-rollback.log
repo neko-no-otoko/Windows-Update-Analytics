@@ -1,0 +1,5 @@
+2026-08-20 14:12:01, Info                  MOUPG  SetupHost initialized for source build 22631 and target build 26200
+2026-08-20 14:31:44, Info                  SP     Entering SP_EXECUTION_SAFE_OS
+2026-08-20 14:32:09, Error                 SP     Driver installation failed with result 0xC1900101 - 0x20017
+2026-08-20 14:32:10, Fatal Error           SP     Failure during the SAFE_OS phase with an error during BOOT operation
+2026-08-20 14:33:02, Error                 SP     Initiating rollback due to driver failure

@@ -1,0 +1,896 @@
+Set-StrictMode -Version 2.0
+
+function ConvertTo-WudCimRecord {
+    param($InputObject, [string[]]$Properties)
+    if ($null -eq $InputObject) { return $null }
+    $record = [ordered]@{}
+    foreach ($name in $Properties) {
+        $property = $InputObject.PSObject.Properties[$name]
+        if ($property) { $record[$name] = $property.Value }
+    }
+    return [pscustomobject]$record
+}
+
+function Get-WudCimRecords {
+    param([string]$ClassName, [string]$Namespace = 'root\cimv2', [string[]]$Properties)
+    $records = New-Object Collections.ArrayList
+    foreach ($item in @(Get-CimInstance -Namespace $Namespace -ClassName $ClassName -ErrorAction Stop)) {
+        $null = $records.Add((ConvertTo-WudCimRecord -InputObject $item -Properties $Properties))
+    }
+    return @($records)
+}
+
+function Get-WudInstalledApplications {
+    $paths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'Registry::HKEY_USERS\*\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    $items = New-Object Collections.ArrayList
+    foreach ($path in $paths) {
+        foreach ($app in @(Get-ItemProperty -Path $path -ErrorAction SilentlyContinue)) {
+            if ([string]::IsNullOrWhiteSpace([string]$app.DisplayName)) { continue }
+            $scope = if ($app.PSPath -match 'HKEY_USERS') { 'LoadedUser' } else { 'Machine' }
+            $architecture = if ($app.PSPath -match 'WOW6432Node') { 'x86' } else { 'x64-or-neutral' }
+            $null = $items.Add([pscustomobject][ordered]@{
+                DisplayName     = $app.DisplayName
+                DisplayVersion  = $app.DisplayVersion
+                Publisher       = $app.Publisher
+                InstallDate     = $app.InstallDate
+                InstallLocation = $app.InstallLocation
+                UninstallString = $app.UninstallString
+                ProductCode     = $app.PSChildName
+                Scope           = $scope
+                Architecture    = $architecture
+                RegistryPath    = $app.PSPath
+            })
+        }
+    }
+    return @($items | Sort-Object DisplayName, DisplayVersion, Scope -Unique)
+}
+
+function Get-WudPendingRebootState {
+    $componentBasedServicing = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+    $windowsUpdate = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+    $pendingRename = $false
+    $pendingRenameValues = $null
+    try {
+        $pendingRenameValues = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name PendingFileRenameOperations -ErrorAction Stop).PendingFileRenameOperations
+        $pendingRename = @($pendingRenameValues).Count -gt 0
+    }
+    catch { }
+    $computerRename = $false
+    try {
+        $active = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName').ComputerName
+        $pending = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName').ComputerName
+        $computerRename = $active -ne $pending
+    }
+    catch { }
+    return [pscustomobject][ordered]@{
+        ComponentBasedServicing = $componentBasedServicing
+        WindowsUpdate           = $windowsUpdate
+        PendingFileRename       = $pendingRename
+        PendingFileRenameValues = $pendingRenameValues
+        ComputerRename          = $computerRename
+        IsPending               = ($componentBasedServicing -or $windowsUpdate -or $pendingRename -or $computerRename)
+    }
+}
+
+function Invoke-WudIdentityCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Inventory')
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+    $product = Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue
+    $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
+    $currentVersion = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    $locale = $null
+    try { $locale = (Get-WinSystemLocale).Name } catch { }
+    $uiLanguage = $null
+    try { $uiLanguage = [Globalization.CultureInfo]::InstalledUICulture.Name } catch { }
+    $identity = [pscustomobject][ordered]@{
+        ComputerName        = $env:COMPUTERNAME
+        Domain              = $computer.Domain
+        Manufacturer        = $computer.Manufacturer
+        Model               = $computer.Model
+        SystemType          = $computer.SystemType
+        TotalPhysicalMemory = $computer.TotalPhysicalMemory
+        HypervisorPresent   = $computer.HypervisorPresent
+        SerialNumber        = if ($product) { $product.IdentifyingNumber } else { $null }
+        UUID                = if ($product) { $product.UUID } else { $null }
+        OsCaption           = $os.Caption
+        EditionId           = $currentVersion.EditionID
+        ProductName         = $currentVersion.ProductName
+        DisplayVersion      = $currentVersion.DisplayVersion
+        CurrentBuild        = $currentVersion.CurrentBuild
+        CurrentBuildNumber  = $os.BuildNumber
+        UBR                 = $currentVersion.UBR
+        BuildLabEx          = $currentVersion.BuildLabEx
+        InstallationType    = $currentVersion.InstallationType
+        ReleaseId           = $currentVersion.ReleaseId
+        InstallDate         = $os.InstallDate
+        LastBootUpTime      = $os.LastBootUpTime
+        OsArchitecture      = $os.OSArchitecture
+        ProcessArchitecture = $env:PROCESSOR_ARCHITECTURE
+        FirmwareVersion     = if ($bios) { $bios.SMBIOSBIOSVersion } else { $null }
+        SystemLocale        = $locale
+        SystemDefaultUiLanguage = $uiLanguage
+        TimeZone            = [TimeZoneInfo]::Local.Id
+        CapturedUtc         = [DateTime]::UtcNow.ToString('o')
+    }
+    $sourceOs = New-Object Collections.ArrayList
+    foreach ($key in @(Get-ChildItem 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like 'Source OS*' })) {
+        try {
+            $value = Get-ItemProperty -LiteralPath $key.PSPath
+            $null = $sourceOs.Add([pscustomobject][ordered]@{
+                Key            = $key.PSChildName
+                ProductName    = $value.ProductName
+                ReleaseId      = $value.ReleaseId
+                DisplayVersion = $value.DisplayVersion
+                CurrentBuild   = $value.CurrentBuild
+                UBR            = $value.UBR
+                InstallDate    = $value.InstallDate
+            })
+        }
+        catch { }
+    }
+    $identity | Add-Member -NotePropertyName SourceOsHistory -NotePropertyValue @($sourceOs | Sort-Object { try { [long]$_.InstallDate } catch { 0 } } -Descending)
+    Write-WudJsonAtomic -Path (Join-Path $path 'identity.json') -InputObject $identity
+    $Context.Inventory['Identity'] = $identity
+    $null = Invoke-WudProcess -Context $Context -FilePath 'systeminfo.exe' -Name 'systeminfo' -TimeoutSeconds 300
+}
+
+function Invoke-WudHardwareCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Inventory')
+    $processors = Get-WudCimRecords Win32_Processor -Properties @('Name', 'Manufacturer', 'NumberOfCores', 'NumberOfLogicalProcessors', 'AddressWidth', 'MaxClockSpeed', 'ProcessorId', 'SecondLevelAddressTranslationExtensions', 'VirtualizationFirmwareEnabled')
+    $memory = Get-WudCimRecords Win32_PhysicalMemory -Properties @('Manufacturer', 'PartNumber', 'SerialNumber', 'Capacity', 'Speed', 'ConfiguredClockSpeed')
+    $video = Get-WudCimRecords Win32_VideoController -Properties @('Name', 'DriverVersion', 'DriverDate', 'AdapterRAM', 'PNPDeviceID', 'VideoModeDescription')
+    $disks = Get-WudCimRecords Win32_DiskDrive -Properties @('Model', 'SerialNumber', 'InterfaceType', 'MediaType', 'Size', 'Status', 'PNPDeviceID', 'FirmwareRevision')
+    $logicalDisks = Get-WudCimRecords Win32_LogicalDisk -Properties @('DeviceID', 'DriveType', 'FileSystem', 'VolumeName', 'Size', 'FreeSpace', 'Status')
+    $partitions = Get-WudCimRecords Win32_DiskPartition -Properties @('DeviceID', 'DiskIndex', 'Index', 'Type', 'Size', 'StartingOffset', 'BootPartition', 'PrimaryPartition')
+    $battery = Get-WudCimRecords Win32_Battery -Properties @('Name', 'BatteryStatus', 'EstimatedChargeRemaining', 'EstimatedRunTime', 'Status')
+    $volumes = @()
+    try { $volumes = @(Get-Volume -ErrorAction Stop | Select-Object DriveLetter, FileSystemLabel, FileSystemType, HealthStatus, OperationalStatus, Size, SizeRemaining, Path) } catch { }
+    $storagePartitions = @()
+    try { $storagePartitions = @(Get-Partition -ErrorAction Stop | Select-Object DiskNumber, PartitionNumber, DriveLetter, Type, GptType, MbrType, Size, Offset, IsSystem, IsBoot, IsActive, IsHidden, IsReadOnly, IsOffline, Guid, AccessPaths) } catch { }
+    $storageDisks = @()
+    try { $storageDisks = @(Get-Disk -ErrorAction Stop | Select-Object Number, FriendlyName, SerialNumber, Manufacturer, Model, BusType, PartitionStyle, OperationalStatus, HealthStatus, IsSystem, IsBoot, IsOffline, IsReadOnly, Size, AllocatedSize, LargestFreeExtent, NumberOfPartitions, FirmwareVersion) } catch { }
+    $physical = @()
+    try { $physical = @(Get-PhysicalDisk -ErrorAction Stop | Select-Object FriendlyName, SerialNumber, MediaType, BusType, HealthStatus, OperationalStatus, Size, FirmwareVersion) } catch { }
+    $reliability = @()
+    try {
+        foreach ($disk in @(Get-PhysicalDisk -ErrorAction Stop)) {
+            try { $reliability += @($disk | Get-StorageReliabilityCounter | Select-Object *) } catch { }
+        }
+    }
+    catch { }
+    $tpm = $null
+    try { $tpm = Get-Tpm -ErrorAction Stop | Select-Object TpmPresent, TpmReady, TpmEnabled, TpmActivated, TpmOwned, ManufacturerIdTxt, ManufacturerVersion, ManagedAuthLevel, AutoProvisioning }
+    catch { $tpm = [pscustomobject]@{ Error = $_.Exception.Message } }
+    $tpmWmi = @()
+    try { $tpmWmi = @(Get-CimInstance -Namespace 'root\CIMV2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop | Select-Object IsActivated_InitialValue, IsEnabled_InitialValue, IsOwned_InitialValue, ManufacturerId, ManufacturerIdTxt, ManufacturerVersion, PhysicalPresenceVersionInfo, SpecVersion) } catch { }
+    $secureBoot = $null
+    try { $secureBoot = Confirm-SecureBootUEFI -ErrorAction Stop }
+    catch { $secureBoot = "Unavailable: $($_.Exception.Message)" }
+    $bios = Get-WudCimRecords Win32_BIOS -Properties @('Manufacturer', 'Name', 'SMBIOSBIOSVersion', 'Version', 'ReleaseDate', 'SerialNumber', 'SMBIOSMajorVersion', 'SMBIOSMinorVersion', 'BiosCharacteristics')
+    $hardware = [pscustomobject][ordered]@{
+        Processors         = $processors
+        PhysicalMemory    = $memory
+        VideoControllers  = $video
+        DiskDrives        = $disks
+        LogicalDisks      = $logicalDisks
+        Partitions        = $partitions
+        StoragePartitions = $storagePartitions
+        StorageDisks      = $storageDisks
+        Volumes           = $volumes
+        PhysicalDisks     = $physical
+        StorageReliability = $reliability
+        Battery           = $battery
+        Bios              = $bios
+        Tpm               = $tpm
+        TpmWmi            = $tpmWmi
+        SecureBoot        = $secureBoot
+    }
+    Write-WudJsonAtomic -Path (Join-Path $path 'hardware.json') -InputObject $hardware -Depth 20
+    $Context.Inventory['Hardware'] = $hardware
+    foreach ($command in @(
+        @{ File = 'reagentc.exe'; Name = 'reagentc-info'; Args = @('/info') },
+        @{ File = 'bcdedit.exe'; Name = 'bcdedit-enum-all'; Args = @('/enum', 'all') },
+        @{ File = 'manage-bde.exe'; Name = 'manage-bde-status'; Args = @('-status') },
+        @{ File = 'mountvol.exe'; Name = 'mountvol-list'; Args = @() },
+        @{ File = 'powercfg.exe'; Name = 'powercfg-active-scheme'; Args = @('/getactivescheme') },
+        @{ File = 'powercfg.exe'; Name = 'powercfg-available-sleep-states'; Args = @('/a') },
+        @{ File = 'dxdiag.exe'; Name = 'dxdiag'; Args = @('/whql:off', '/t', (Join-Path $path 'dxdiag.txt')) },
+        @{ File = 'msinfo32.exe'; Name = 'msinfo32'; Args = @('/report', (Join-Path $path 'msinfo32.txt')) }
+    )) {
+        $null = Invoke-WudProcess -Context $Context -FilePath $command.File -ArgumentList $command.Args -Name $command.Name -TimeoutSeconds 300
+    }
+}
+
+function Invoke-WudSoftwareCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Inventory')
+    $applications = Get-WudInstalledApplications
+    $appx = @()
+    $provisioned = @()
+    $features = @()
+    $capabilities = @()
+    $languages = @()
+    try { $appx = @(Get-AppxPackage -AllUsers -ErrorAction Stop | Select-Object Name, PackageFullName, PackageFamilyName, Version, Architecture, Publisher, SignatureKind, Status, UserSid) } catch { }
+    try { $provisioned = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop | Select-Object DisplayName, PackageName, Version, Architecture, ResourceId) } catch { }
+    try { $features = @(Get-WindowsOptionalFeature -Online -ErrorAction Stop | Select-Object FeatureName, State, RestartRequired) } catch { }
+    try { $capabilities = @(Get-WindowsCapability -Online -ErrorAction Stop | Select-Object Name, State, DisplayName, Description) } catch { }
+    try { $languages = @(Get-WinUserLanguageList -ErrorAction Stop | Select-Object LanguageTag, Autonym, EnglishName, LocalizedName, ScriptName, InputMethodTips, Spellchecking, Handwriting) } catch { }
+    $profiles = Get-WudCimRecords Win32_UserProfile -Properties @('SID', 'LocalPath', 'Loaded', 'Special', 'RoamingConfigured', 'RoamingPath', 'LastUseTime', 'Status')
+    $services = Get-WudCimRecords Win32_Service -Properties @('Name', 'DisplayName', 'State', 'StartMode', 'PathName', 'StartName', 'ServiceType', 'ExitCode', 'ProcessId')
+    $antivirus = @()
+    try { $antivirus = @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop | Select-Object displayName, pathToSignedProductExe, pathToSignedReportingExe, productState, timestamp) } catch { }
+    $processes = @()
+    try { $processes = @(Get-Process -ErrorAction Stop | Select-Object Name, Id, Path, Company, ProductVersion, StartTime) } catch { }
+    $software = [pscustomobject][ordered]@{
+        Applications      = $applications
+        AppxPackages      = $appx
+        ProvisionedAppx   = $provisioned
+        OptionalFeatures  = $features
+        Capabilities      = $capabilities
+        Languages         = $languages
+        UserProfiles      = $profiles
+        Services          = $services
+        AntivirusProducts = $antivirus
+        Processes         = $processes
+    }
+    Write-WudJsonAtomic -Path (Join-Path $path 'software.json') -InputObject $software -Depth 20
+    $Context.Inventory['Software'] = $software
+    $null = Invoke-WudProcess -Context $Context -FilePath 'fltmc.exe' -ArgumentList @('filters') -Name 'filesystem-filters' -TimeoutSeconds 300
+}
+
+function Invoke-WudDriverCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Inventory')
+    $signedDrivers = Get-WudCimRecords Win32_PnPSignedDriver -Properties @('DeviceName', 'DeviceID', 'DeviceClass', 'Manufacturer', 'DriverProviderName', 'DriverVersion', 'DriverDate', 'InfName', 'IsSigned', 'Signer', 'Started', 'StartMode')
+    $devices = Get-WudCimRecords Win32_PnPEntity -Properties @('Name', 'DeviceID', 'PNPClass', 'Manufacturer', 'Service', 'Status', 'ConfigManagerErrorCode', 'Present')
+    $pnp = @()
+    try { $pnp = @(Get-PnpDevice -PresentOnly:$false -ErrorAction Stop | Select-Object Status, Class, FriendlyName, InstanceId, Problem, Present) } catch { }
+    $drivers = [pscustomobject][ordered]@{ SignedDrivers = $signedDrivers; Devices = $devices; PnpDevices = $pnp }
+    Write-WudJsonAtomic -Path (Join-Path $path 'drivers.json') -InputObject $drivers -Depth 20
+    $Context.Inventory['Drivers'] = $drivers
+    $null = Invoke-WudProcess -Context $Context -FilePath 'pnputil.exe' -ArgumentList @('/enum-drivers', '/files') -Name 'pnputil-drivers' -TimeoutSeconds 900
+    $null = Invoke-WudProcess -Context $Context -FilePath 'pnputil.exe' -ArgumentList @('/enum-devices', '/problem') -Name 'pnputil-problem-devices' -TimeoutSeconds 600
+}
+
+function Test-WudEndpoint {
+    param([string]$Uri)
+    $started = [DateTime]::UtcNow
+    try {
+        $request = [Net.HttpWebRequest]::Create($Uri)
+        $request.Method = 'HEAD'
+        $request.AllowAutoRedirect = $true
+        $request.Timeout = 15000
+        $request.ReadWriteTimeout = 15000
+        $response = $request.GetResponse()
+        $status = [int]$response.StatusCode
+        $finalUri = $response.ResponseUri.AbsoluteUri
+        $response.Close()
+        return [pscustomobject][ordered]@{ Uri = $Uri; Reachable = $true; StatusCode = $status; FinalUri = $finalUri; Error = $null; DurationMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds }
+    }
+    catch [Net.WebException] {
+        $response = $_.Exception.Response
+        if ($response) {
+            $status = [int]$response.StatusCode
+            $finalUri = $response.ResponseUri.AbsoluteUri
+            try { $response.Close() } catch { }
+            return [pscustomobject][ordered]@{ Uri = $Uri; Reachable = $true; StatusCode = $status; FinalUri = $finalUri; Error = $_.Exception.Message; DurationMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds }
+        }
+        return [pscustomobject][ordered]@{ Uri = $Uri; Reachable = $false; StatusCode = $null; FinalUri = $null; Error = $_.Exception.Message; DurationMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds }
+    }
+    catch {
+        return [pscustomobject][ordered]@{ Uri = $Uri; Reachable = $false; StatusCode = $null; FinalUri = $null; Error = $_.Exception.Message; DurationMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds }
+    }
+}
+
+function Invoke-WudManagementCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Management')
+    $registrySets = @(
+        @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'; Name = 'policy-windows-update.json' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings'; Name = 'ux-settings.json' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UpdatePolicy'; Name = 'update-policy-state.json' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Update'; Name = 'mdm-update-policy.json' },
+        @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization'; Name = 'policy-delivery-optimization.json' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeliveryOptimization'; Name = 'mdm-delivery-optimization.json' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\DeviceManageabilityCSP'; Name = 'device-manageability-csp.json' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags'; Name = 'appcompat-flags.json' },
+        @{ Path = 'HKLM:\SYSTEM\Setup'; Name = 'system-setup.json' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Enrollments'; Name = 'mdm-enrollments.json' }
+    )
+    $registryExports = [ordered]@{}
+    foreach ($set in $registrySets) {
+        $registryExports[$set.Name] = @(Export-WudRegistryTree -RegistryPath $set.Path -OutputPath (Join-Path $path $set.Name))
+    }
+    $services = @()
+    foreach ($name in @('wuauserv', 'bits', 'cryptsvc', 'UsoSvc', 'DoSvc', 'WaaSMedicSvc', 'TrustedInstaller', 'CcmExec', 'IntuneManagementExtension')) {
+        try {
+            $service = Get-CimInstance Win32_Service -Filter ("Name='{0}'" -f $name) -ErrorAction Stop
+            $services += @(ConvertTo-WudCimRecord $service @('Name', 'DisplayName', 'State', 'StartMode', 'PathName', 'StartName', 'ExitCode', 'ProcessId'))
+        }
+        catch { }
+    }
+    $bitsJobs = @()
+    try { $bitsJobs = @(Get-BitsTransfer -AllUsers -ErrorAction Stop | Select-Object DisplayName, Description, JobState, JobId, OwnerAccount, TransferType, CreationTime, ModificationTime, BytesTotal, BytesTransferred, ErrorDescription) } catch { }
+    $connectivity = @()
+    $configuredUpdateEndpoints = New-Object Collections.ArrayList
+    try {
+        $wuPolicy = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -ErrorAction Stop
+        foreach ($propertyName in @('WUServer', 'WUStatusServer')) {
+            $uri = [string]$wuPolicy.$propertyName
+            if (-not [string]::IsNullOrWhiteSpace($uri) -and -not $configuredUpdateEndpoints.Contains($uri)) { $null = $configuredUpdateEndpoints.Add($uri) }
+        }
+    }
+    catch { }
+    foreach ($endpoint in @($configuredUpdateEndpoints)) {
+        $result = Test-WudEndpoint -Uri ([string]$endpoint)
+        $result | Add-Member -NotePropertyName Kind -NotePropertyValue 'ConfiguredUpdateService'
+        $connectivity += @($result)
+    }
+    if (-not $Context.NoInternet) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        foreach ($endpoint in @($Context.Settings.connectivityEndpoints)) {
+            $result = Test-WudEndpoint -Uri ([string]$endpoint)
+            $result | Add-Member -NotePropertyName Kind -NotePropertyValue 'MicrosoftPublic'
+            $connectivity += @($result)
+        }
+    }
+    $networkAdapters = @()
+    $networkBindings = @()
+    $networkConfiguration = @()
+    $vpnConnections = @()
+    try { $networkAdapters = @(Get-NetAdapter -IncludeHidden -ErrorAction Stop | Select-Object Name, InterfaceDescription, InterfaceIndex, Status, MacAddress, LinkSpeed, MediaType, PhysicalMediaType, DriverInformation, DriverFileName, DriverVersion) } catch { }
+    try { $networkBindings = @(Get-NetAdapterBinding -AllBindings -ErrorAction Stop | Select-Object Name, DisplayName, ComponentID, Enabled) } catch { }
+    try {
+        $networkConfiguration = @(Get-NetIPConfiguration -Detailed -ErrorAction Stop | ForEach-Object {
+            [pscustomobject][ordered]@{
+                InterfaceAlias = $_.InterfaceAlias; InterfaceIndex = $_.InterfaceIndex; InterfaceDescription = $_.InterfaceDescription
+                NetProfile = if ($_.NetProfile) { $_.NetProfile.Name } else { $null }
+                IPv4Address = @($_.IPv4Address | ForEach-Object IPAddress); IPv6Address = @($_.IPv6Address | ForEach-Object IPAddress)
+                IPv4DefaultGateway = @($_.IPv4DefaultGateway | ForEach-Object NextHop); IPv6DefaultGateway = @($_.IPv6DefaultGateway | ForEach-Object NextHop)
+                DnsServers = if ($_.DNSServer) { @($_.DNSServer.ServerAddresses) } else { @() }
+            }
+        })
+    }
+    catch { }
+    try { $vpnConnections = @(Get-VpnConnection -AllUserConnection -ErrorAction Stop | Select-Object Name, ServerAddress, TunnelType, AuthenticationMethod, EncryptionLevel, SplitTunneling, ConnectionStatus) } catch { }
+    $configMgrClient = $null
+    try { $configMgrClient = Get-CimInstance -Namespace 'root\ccm' -ClassName SMS_Client -ErrorAction Stop | Select-Object ClientVersion, ClientType, EnableAutoAssignment, AllowLocalAdminOverride }
+    catch { }
+    $policySummary = [pscustomobject][ordered]@{
+        Services     = $services
+        BitsJobs     = $bitsJobs
+        Connectivity = $connectivity
+        ConfiguredUpdateEndpoints = @($configuredUpdateEndpoints)
+        NetworkAdapters = $networkAdapters
+        NetworkBindings = $networkBindings
+        NetworkConfiguration = $networkConfiguration
+        VpnConnections = $vpnConnections
+        ConfigMgrClient = $configMgrClient
+        RegistryExports = [pscustomobject]$registryExports
+        InternetTestsSuppressed = $Context.NoInternet
+    }
+    Write-WudJsonAtomic -Path (Join-Path $path 'management-summary.json') -InputObject $policySummary
+    $Context.Inventory['Management'] = $policySummary
+    foreach ($command in @(
+        @{ File = 'gpresult.exe'; Name = 'gpresult'; Args = @('/x', (Join-Path $path 'gpresult.xml'), '/f') },
+        @{ File = 'dsregcmd.exe'; Name = 'dsregcmd-status'; Args = @('/status') },
+        @{ File = 'netsh.exe'; Name = 'winhttp-proxy'; Args = @('winhttp', 'show', 'proxy') },
+        @{ File = 'ipconfig.exe'; Name = 'ipconfig-all'; Args = @('/all') },
+        @{ File = 'route.exe'; Name = 'route-print'; Args = @('print') },
+        @{ File = 'w32tm.exe'; Name = 'time-status'; Args = @('/query', '/status', '/verbose') }
+    )) {
+        $null = Invoke-WudProcess -Context $Context -FilePath $command.File -ArgumentList $command.Args -Name $command.Name -TimeoutSeconds 600
+    }
+    if (Test-Path (Join-Path $env:SystemRoot 'System32\mdmdiagnosticstool.exe')) {
+        $mdmZip = Join-Path $path 'MDMDiagnostics.zip'
+        $null = Invoke-WudProcess -Context $Context -FilePath 'mdmdiagnosticstool.exe' -ArgumentList @('-area', 'DeviceEnrollment;DeviceProvisioning', '-zip', $mdmZip) -Name 'mdm-diagnostics' -TimeoutSeconds 1200
+    }
+}
+
+function Get-WudUpdateHistory {
+    $records = New-Object Collections.ArrayList
+    try {
+        $session = New-Object -ComObject Microsoft.Update.Session
+        $searcher = $session.CreateUpdateSearcher()
+        $count = $searcher.GetTotalHistoryCount()
+        if ($count -gt 0) {
+            foreach ($entry in @($searcher.QueryHistory(0, [Math]::Min($count, 2000)))) {
+                $null = $records.Add([pscustomobject][ordered]@{
+                    Date               = $entry.Date
+                    Title              = $entry.Title
+                    Description        = $entry.Description
+                    Operation          = [string]$entry.Operation
+                    ResultCode         = [string]$entry.ResultCode
+                    HResult            = $entry.HResult
+                    HResultHex         = '0x{0:X8}' -f ([long]$entry.HResult -band 0xFFFFFFFFL)
+                    SupportUrl         = $entry.SupportUrl
+                    UnmappedResultCode = $entry.UnmappedResultCode
+                })
+            }
+        }
+    }
+    catch { }
+    return @($records)
+}
+
+function Invoke-WudServicingCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Servicing')
+    $pending = Get-WudPendingRebootState
+    $history = Get-WudUpdateHistory
+    $hotfixes = @()
+    $packages = @()
+    try { $hotfixes = @(Get-HotFix -ErrorAction Stop | Select-Object HotFixID, Description, InstalledBy, InstalledOn, Caption) } catch { }
+    try { $packages = @(Get-WindowsPackage -Online -ErrorAction Stop | Select-Object PackageName, PackageState, ReleaseType, InstallTime, Applicable, Copyright, Company, CreationTime, Description) } catch { }
+    $servicing = [pscustomobject][ordered]@{ PendingReboot = $pending; UpdateHistory = $history; HotFixes = $hotfixes; Packages = $packages }
+    Write-WudJsonAtomic -Path (Join-Path $path 'servicing.json') -InputObject $servicing -Depth 20
+    $Context.Inventory['Servicing'] = $servicing
+    $null = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Online', '/Get-Packages', '/Format:Table', '/English') -Name 'dism-packages' -TimeoutSeconds 1200
+    $null = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Online', '/Get-Features', '/Format:Table', '/English') -Name 'dism-features' -TimeoutSeconds 1200
+}
+
+function Invoke-WudActiveHealthCollector {
+    param($Context)
+    $dismTimeout = [int]$Context.Settings.timeoutsSeconds.dismScanHealth
+    $sfcTimeout = [int]$Context.Settings.timeoutsSeconds.sfcVerifyOnly
+    $null = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Online', '/Cleanup-Image', '/ScanHealth', '/English') -Name 'dism-scanhealth' -TimeoutSeconds $dismTimeout -SuccessExitCodes @(0, 3010)
+    $null = Invoke-WudProcess -Context $Context -FilePath 'sfc.exe' -ArgumentList @('/verifyonly') -Name 'sfc-verifyonly' -TimeoutSeconds $sfcTimeout -SuccessExitCodes @(0, 1)
+}
+
+function Invoke-WudAppraiserCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Compatibility')
+    $taskPath = '\Microsoft\Windows\Application Experience\'
+    $taskName = 'Microsoft Compatibility Appraiser'
+    $result = [ordered]@{ TaskPath = $taskPath; TaskName = $taskName; StartedUtc = [DateTime]::UtcNow.ToString('o'); Status = 'NotFound'; TimedOut = $false; Before = $null; After = $null; Error = $null }
+    try {
+        $task = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+        try { $result.Before = Get-ScheduledTaskInfo -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop | Select-Object LastRunTime, LastTaskResult, NextRunTime, NumberOfMissedRuns }
+        catch { }
+        Start-ScheduledTask -InputObject $task -ErrorAction Stop
+        $result.Status = 'Running'
+        $deadline = [DateTime]::UtcNow.AddSeconds([int]$Context.Settings.timeoutsSeconds.appraiser)
+        do {
+            Start-Sleep -Seconds 5
+            $task = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+            if ([DateTime]::UtcNow -ge $deadline -and $task.State -eq 'Running') {
+                $result.TimedOut = $true
+                try { Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop } catch { }
+                break
+            }
+        } while ($task.State -eq 'Running')
+        try { $result.After = Get-ScheduledTaskInfo -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop | Select-Object LastRunTime, LastTaskResult, NextRunTime, NumberOfMissedRuns }
+        catch { }
+        $result.Status = if ($result.TimedOut) { 'TimedOut' } else { 'Completed' }
+    }
+    catch { $result.Error = $_.Exception.Message }
+    $result['EndedUtc'] = [DateTime]::UtcNow.ToString('o')
+    if ($result.TimedOut) { $null = Add-WudCollectionGap -Context $Context -Collector 'appraiser' -Source "$taskPath$taskName" -Status 'TimedOut' -Detail 'The Compatibility Appraiser task exceeded its configured timeout.' }
+    elseif ($result.Error) { $null = Add-WudCollectionGap -Context $Context -Collector 'appraiser' -Source "$taskPath$taskName" -Status 'Unavailable' -Detail $result.Error }
+    Write-WudJsonAtomic -Path (Join-Path $path 'appraiser-task.json') -InputObject ([pscustomobject]$result)
+}
+
+function Invoke-WudMediaCompatibilityCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Compatibility\MediaScan')
+    $record = [ordered]@{ Requested = -not [string]::IsNullOrWhiteSpace($Context.MediaPath); MediaPath = $Context.MediaPath; EulaAccepted = $Context.AcceptWindowsEula; Validated = $false; Executed = $false; Result = $null; Reason = $null }
+    if ([string]::IsNullOrWhiteSpace($Context.MediaPath)) {
+        $record.Reason = 'No media path was supplied.'
+        Write-WudJsonAtomic -Path (Join-Path $path 'media-scan.json') -InputObject ([pscustomobject]$record)
+        return
+    }
+    if (-not $Context.AcceptWindowsEula) {
+        $record.Reason = 'The compatibility scan was not run because -AcceptWindowsEula was not supplied.'
+        Write-WudJsonAtomic -Path (Join-Path $path 'media-scan.json') -InputObject ([pscustomobject]$record)
+        return
+    }
+    $setup = Join-Path $Context.MediaPath 'setup.exe'
+    if (-not (Test-Path -LiteralPath $setup)) {
+        $record.Reason = 'setup.exe was not found at the media root.'
+        Write-WudJsonAtomic -Path (Join-Path $path 'media-scan.json') -InputObject ([pscustomobject]$record)
+        return
+    }
+    $images = @(@('sources\install.wim', 'sources\install.esd', 'sources\install.swm') | ForEach-Object { Join-Path $Context.MediaPath $_ } | Where-Object { Test-Path -LiteralPath $_ })
+    if (@($images).Count -eq 0) {
+        $record.Reason = 'No supported install.wim, install.esd, or first install.swm image was found in the media sources folder.'
+        Write-WudJsonAtomic -Path (Join-Path $path 'media-scan.json') -InputObject ([pscustomobject]$record)
+        return
+    }
+    $imageFile = [string]$images[0]
+    $wimResult = $null
+    $wimResult = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Get-WimInfo', ("/WimFile:{0}" -f $imageFile), '/English') -Name 'media-wim-info' -TimeoutSeconds 1200
+    $fileVersion = (Get-Item -LiteralPath $setup).VersionInfo.FileVersion
+    $record['SetupFileVersion'] = $fileVersion
+    $record['ImageFile'] = $imageFile
+    $wimText = ''
+    if ($wimResult -and (Test-Path -LiteralPath $wimResult.StandardOut)) { $wimText = Get-Content -LiteralPath $wimResult.StandardOut -Raw -ErrorAction SilentlyContinue }
+    $expectedBuild = [string]$Context.Target.buildFamily
+    $imageDetails = New-Object Collections.ArrayList
+    foreach ($match in [Regex]::Matches([string]$wimText, '(?im)^\s*Index\s*:\s*(\d+)\s*$')) {
+        if (@($imageDetails).Count -ge 50) { break }
+        $index = [int]$match.Groups[1].Value
+        $detailResult = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Get-WimInfo', ("/WimFile:{0}" -f $imageFile), ("/Index:{0}" -f $index), '/English') -Name ("media-wim-index-{0}" -f $index) -TimeoutSeconds 1200
+        $detailText = if ($detailResult -and (Test-Path -LiteralPath $detailResult.StandardOut)) { Get-Content -LiteralPath $detailResult.StandardOut -Raw -ErrorAction SilentlyContinue } else { '' }
+        $fields = [ordered]@{ Index = $index; Name = $null; Description = $null; Architecture = $null; Version = $null; Edition = $null; DefaultLanguage = $null }
+        foreach ($field in @(
+            @{ Name = 'Name'; Pattern = '(?im)^\s*Name\s*:\s*(.+?)\s*$' },
+            @{ Name = 'Description'; Pattern = '(?im)^\s*Description\s*:\s*(.+?)\s*$' },
+            @{ Name = 'Architecture'; Pattern = '(?im)^\s*Architecture\s*:\s*(.+?)\s*$' },
+            @{ Name = 'Version'; Pattern = '(?im)^\s*Version\s*:\s*(.+?)\s*$' },
+            @{ Name = 'Edition'; Pattern = '(?im)^\s*Edition\s*:\s*(.+?)\s*$' },
+            @{ Name = 'DefaultLanguage'; Pattern = '(?im)^\s*Default Language\s*:\s*(.+?)\s*$' }
+        )) {
+            $fieldMatch = [Regex]::Match([string]$detailText, $field.Pattern)
+            if ($fieldMatch.Success) { $fields[$field.Name] = $fieldMatch.Groups[1].Value.Trim() }
+        }
+        $null = $imageDetails.Add([pscustomobject]$fields)
+    }
+    $identity = $Context.Inventory['Identity']
+    $currentArchitecture = if ([string]$identity.ProcessArchitecture -match '(?i)ARM64') { 'arm64' } elseif ([string]$identity.ProcessArchitecture -match '(?i)AMD64') { 'x64' } else { ([string]$identity.ProcessArchitecture).ToLowerInvariant() }
+    $currentEdition = [string]$identity.EditionId
+    $currentLanguage = [string]$identity.SystemDefaultUiLanguage
+    if ([string]::IsNullOrWhiteSpace($currentLanguage)) { $currentLanguage = [string]$identity.SystemLocale }
+    $matchingImages = @($imageDetails | Where-Object {
+        ([string]$_.Version -match ("^10\.0\.{0}(?:\.|$)" -f [Regex]::Escape($expectedBuild))) -and
+        ([string]$_.Architecture).ToLowerInvariant() -eq $currentArchitecture -and
+        ([string]$_.Edition -ieq $currentEdition) -and
+        ([string]$_.DefaultLanguage -ieq $currentLanguage)
+    })
+    $record['RunningArchitecture'] = $currentArchitecture
+    $record['RunningEdition'] = $currentEdition
+    $record['RunningSystemDefaultUiLanguage'] = $currentLanguage
+    $record['Images'] = @($imageDetails)
+    $record['MatchingImages'] = @($matchingImages | ForEach-Object Index)
+    $record['BuildMatch'] = (($fileVersion -match ("10\.0\.{0}" -f [Regex]::Escape($expectedBuild))) -or @($imageDetails | Where-Object { [string]$_.Version -match ("^10\.0\.{0}(?:\.|$)" -f [Regex]::Escape($expectedBuild)) }).Count -gt 0)
+    $record['ArchitectureMatch'] = @($imageDetails | Where-Object { ([string]$_.Architecture).ToLowerInvariant() -eq $currentArchitecture }).Count -gt 0
+    $record['EditionMatch'] = @($imageDetails | Where-Object { [string]$_.Edition -ieq $currentEdition }).Count -gt 0
+    $record['LanguageMatch'] = @($imageDetails | Where-Object { [string]$_.DefaultLanguage -ieq $currentLanguage }).Count -gt 0
+    $record.Validated = @($matchingImages).Count -gt 0
+    if (-not $record.Validated) {
+        $record.Reason = "The media does not expose a single image matching build family $expectedBuild, architecture $currentArchitecture, edition $currentEdition, and system default UI language $currentLanguage."
+        Write-WudJsonAtomic -Path (Join-Path $path 'media-scan.json') -InputObject ([pscustomobject]$record) -Depth 20
+        return
+    }
+    $copyLogs = New-WudDirectory -Path (Join-Path $path 'CopyLogs')
+    # Keep the active diagnostic scan non-installing: Dynamic Update can search,
+    # download, and apply Setup updates even when the final operation is scan-only.
+    $dynamicUpdate = 'Disable'
+    $record['DynamicUpdate'] = $dynamicUpdate
+    $args = @('/auto', 'upgrade', '/quiet', '/compat', 'scanonly', '/compat', 'ignorewarning', '/noreboot', '/eula', 'accept', '/copylogs', $copyLogs, '/dynamicupdate', $dynamicUpdate)
+    $scan = Invoke-WudProcess -Context $Context -FilePath $setup -ArgumentList $args -Name 'setup-compat-scan' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.compatibilityScan) -SuccessExitCodes @(0, -1047526896)
+    $record.Executed = $true
+    $record.Result = $scan
+    if ($scan.ExitCodeHex -eq '0xC1900210') { $record.Reason = 'Compatibility scan completed without actionable concerns.' }
+    elseif ($scan.ExitCodeHex -eq '0xC1900208') { $record.Reason = 'Compatibility scan found an actionable application or driver concern.' }
+    else { $record.Reason = "Compatibility scan returned $($scan.ExitCodeHex)." }
+    Write-WudJsonAtomic -Path (Join-Path $path 'media-scan.json') -InputObject ([pscustomobject]$record) -Depth 20
+}
+
+function Copy-WudEvidenceItem {
+    param($Context, [string]$Source, [string]$DestinationName)
+    if (-not (Test-Path -LiteralPath $Source)) { return $false }
+    $root = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Raw')
+    $destination = Join-Path $root $DestinationName
+    try {
+        $item = Get-Item -LiteralPath $Source -Force -ErrorAction Stop
+        if ($item.PSIsContainer) {
+            $null = New-WudDirectory -Path $destination
+            $result = Invoke-WudProcess -Context $Context -FilePath 'robocopy.exe' -ArgumentList @($Source, $destination, '/E', '/COPY:DAT', '/DCOPY:T', '/R:1', '/W:1', '/XJ', '/SL', '/NP') -Name ("copy-{0}" -f $DestinationName) -TimeoutSeconds 3600 -SuccessExitCodes @(0, 1, 2, 3, 4, 5, 6, 7)
+            if (-not $result.Succeeded) {
+                $impact = if ($DestinationName -match '(?i)Panther|Rollback|SetupCopyLogs') { 'Material' } else { 'Optional' }
+                $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $Source -Status $(if ($result.TimedOut) { 'TimedOut' } else { 'CopyFailed' }) -Detail ("robocopy returned {0}." -f $result.ExitCodeHex) -Impact $impact
+            }
+            return $result.Succeeded
+        }
+        $null = New-WudDirectory -Path (Split-Path -Parent $destination)
+        Copy-Item -LiteralPath $Source -Destination $destination -Force -ErrorAction Stop
+        return $true
+    }
+    catch {
+        Write-WudLog -Context $Context -Level WARN -Message ("Could not copy evidence '{0}': {1}" -f $Source, $_.Exception.Message)
+        $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $Source -Status 'CopyFailed' -Detail $_.Exception.Message
+        return $false
+    }
+}
+
+function Invoke-WudRawEvidenceCollector {
+    param($Context)
+    $drive = $env:SystemDrive
+    $windows = $env:SystemRoot
+    $sources = @(
+        @{ Name = 'WindowsBT-Panther'; Path = (Join-Path $drive '$WINDOWS.~BT\Sources\Panther') },
+        @{ Name = 'WindowsBT-Rollback'; Path = (Join-Path $drive '$WINDOWS.~BT\Sources\Rollback') },
+        @{ Name = 'Windows-Panther'; Path = (Join-Path $windows 'Panther') },
+        @{ Name = 'Windows-MoSetup'; Path = (Join-Path $windows 'Logs\MoSetup') },
+        @{ Name = 'Windows-SetupDiag'; Path = (Join-Path $windows 'Logs\SetupDiag') },
+        @{ Name = 'Windows-CBS'; Path = (Join-Path $windows 'Logs\CBS') },
+        @{ Name = 'Windows-DISM'; Path = (Join-Path $windows 'Logs\DISM') },
+        @{ Name = 'WindowsUpdate-ETL'; Path = (Join-Path $windows 'Logs\WindowsUpdate') },
+        @{ Name = 'USOShared-Logs'; Path = (Join-Path $env:ProgramData 'USOShared\Logs') },
+        @{ Name = 'DeliveryOptimization-Logs'; Path = (Join-Path $env:ProgramData 'Microsoft\Windows\DeliveryOptimization\Logs') },
+        @{ Name = 'WindowsOld-Panther'; Path = (Join-Path $drive 'Windows.old\Windows\Panther') },
+        @{ Name = 'ConfigMgr-Logs'; Path = (Join-Path $windows 'CCM\Logs') },
+        @{ Name = 'IntuneManagementExtension-Logs'; Path = (Join-Path $env:ProgramData 'Microsoft\IntuneManagementExtension\Logs') },
+        @{ Name = 'Win11UpgradeDiag-SetupCopyLogs'; Path = (Join-Path $Context.RunPath 'SetupCopyLogs') },
+        @{ Name = 'Win11UpgradeDiag-Persistence-State'; Path = (Join-Path $Context.RunPath 'State\Persistence') },
+        @{ Name = 'Win11UpgradeDiag-Outcome-Markers'; Path = (Join-Path $Context.RunPath 'State\Markers') },
+        @{ Name = 'Windows-Minidump'; Path = (Join-Path $windows 'Minidump') },
+        @{ Name = 'WER-ReportArchive'; Path = (Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportArchive') },
+        @{ Name = 'WER-ReportQueue'; Path = (Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportQueue') },
+        @{ Name = 'setupapi.dev.log'; Path = (Join-Path $windows 'INF\setupapi.dev.log') },
+        @{ Name = 'setupapi.app.log'; Path = (Join-Path $windows 'INF\setupapi.app.log') }
+    )
+    $copyResults = New-Object Collections.ArrayList
+    foreach ($source in $sources) {
+        $present = Test-Path -LiteralPath $source.Path
+        $copied = Copy-WudEvidenceItem -Context $Context -Source $source.Path -DestinationName $source.Name
+        if (-not $present) { $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $source.Path -Status 'Missing' -Detail 'The configured evidence source was not present at collection time.' }
+        $null = $copyResults.Add([pscustomobject][ordered]@{ Source = $source.Path; Destination = $source.Name; Present = $present; Copied = $copied })
+    }
+    if ($Context.Mode -in @('Resume', 'Forensic')) {
+        $rawRoot = Join-Path $Context.SnapshotPath 'Raw'
+        $coreSetupFiles = @(Get-ChildItem -LiteralPath $rawRoot -File -Recurse -Force -ErrorAction SilentlyContinue | Where-Object {
+            $_.FullName -match '(?i)WindowsBT-Panther|WindowsBT-Rollback|Windows-Panther|WindowsOld-Panther|SetupCopyLogs' -and
+            $_.Name -match '(?i)^setup(?:act|err)|CompatData|CompatReport|BlueBox|setupmem|miglog|setuperr'
+        })
+        if (@($coreSetupFiles).Count -eq 0) {
+            $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source 'Windows Setup Panther/Rollback evidence set' -Status 'CoreSetupEvidenceMissing' -Detail 'No core Setup activity/error, compatibility, migration, or setup crash file was available in the copied post-attempt sources.' -Impact 'Material'
+        }
+    }
+    $memoryDump = Join-Path $windows 'MEMORY.DMP'
+    $dumpInfo = $null
+    if (Test-Path -LiteralPath $memoryDump) {
+        $item = Get-Item -LiteralPath $memoryDump
+        $dumpInfo = [pscustomobject][ordered]@{
+            Path         = $memoryDump
+            Length       = $item.Length
+            LastWriteUtc = $item.LastWriteTimeUtc.ToString('o')
+            Sha256       = Get-WudFileHashSafe -Path $memoryDump
+            Copied       = $false
+            CopyReason   = 'Large dump inclusion was not requested.'
+        }
+        if (-not $dumpInfo.Sha256) {
+            $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $memoryDump -Status 'HashUnavailable' -Detail 'MEMORY.DMP metadata was captured, but the file could not be read completely for SHA-256 calculation.'
+        }
+        if ($Context.IncludeLargeDumps) {
+            $driveRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Context.RunPath))
+            $available = try { (New-Object IO.DriveInfo($driveRoot)).AvailableFreeSpace } catch { 0 }
+            $required = [long]$item.Length + [long]$Context.Settings.minimumStagingReserveBytes
+            if ([long]$available -ge $required) {
+                $dumpInfo.Copied = Copy-WudEvidenceItem -Context $Context -Source $memoryDump -DestinationName 'Windows-MEMORY.DMP'
+                $dumpInfo.CopyReason = if ($dumpInfo.Copied) { 'Copied after capacity validation.' } else { 'The copy failed; see collection gaps and Collector.log.' }
+            }
+            else {
+                $dumpInfo.CopyReason = "Skipped because $available free bytes were available and $required bytes were required including reserve."
+                $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $memoryDump -Status 'InsufficientCapacity' -Detail $dumpInfo.CopyReason
+            }
+        }
+    }
+    Write-WudJsonAtomic -Path (Join-Path $Context.SnapshotPath 'raw-copy-results.json') -InputObject ([pscustomobject]@{ Sources = @($copyResults); MemoryDump = $dumpInfo })
+}
+
+function Invoke-WudWindowsUpdateLogCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'WindowsUpdate')
+    $logPath = Join-Path $path 'WindowsUpdate.log'
+    $escaped = $logPath.Replace("'", "''")
+    $script = "Get-WindowsUpdateLog -LogPath '$escaped' -ErrorAction Stop | Out-Null"
+    $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $null = Invoke-WudProcess -Context $Context -FilePath $powerShell -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $script) -Name 'convert-windows-update-log' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.windowsUpdateLog)
+    $doConfig = $null
+    $doStatus = @()
+    $doLog = @()
+    try { $doConfig = Get-DOConfig -Verbose -ErrorAction Stop | Out-String } catch { }
+    try { $doStatus = @(Get-DeliveryOptimizationStatus -ErrorAction Stop | Select-Object *) } catch { }
+    try { $doLog = @(Get-DeliveryOptimizationLog -ErrorAction Stop | Select-Object -First 20000) } catch { }
+    Write-WudText -Path (Join-Path $path 'DeliveryOptimizationConfig.txt') -Text ([string]$doConfig)
+    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationStatus.json') -InputObject $doStatus
+    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationLog.json') -InputObject $doLog -Depth 10
+}
+
+function Invoke-WudEventCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Events')
+    $channels = @(
+        'System', 'Application', 'Setup',
+        'Microsoft-Windows-Setup/Operational',
+        'Microsoft-Windows-MoSetup/Operational',
+        'Microsoft-Windows-WindowsUpdateClient/Operational',
+        'Microsoft-Windows-UpdateOrchestrator/Operational',
+        'Microsoft-Windows-Servicing/Operational',
+        'Microsoft-Windows-DeviceSetupManager/Admin',
+        'Microsoft-Windows-UserPnp/DeviceInstall',
+        'Microsoft-Windows-Kernel-PnP/Configuration',
+        'Microsoft-Windows-Application-Experience/Program-Compatibility-Assistant',
+        'Microsoft-Windows-Application-Experience/Program-Telemetry',
+        'Microsoft-Windows-Kernel-Boot/Operational',
+        'Microsoft-Windows-Diagnostics-Performance/Operational',
+        'Microsoft-Windows-BitLocker/BitLocker Management',
+        'Microsoft-Windows-TPM-WMI/Operational',
+        'Microsoft-Windows-DeviceManagement-Enterprise-Diagnostics-Provider/Admin',
+        'Microsoft-Windows-DeliveryOptimization/Operational',
+        'Microsoft-Windows-Ntfs/Operational',
+        'Microsoft-Windows-Storage-Storport/Operational'
+    )
+    $exports = New-Object Collections.ArrayList
+    foreach ($channel in $channels) {
+        $safe = $channel -replace '[^A-Za-z0-9._-]', '_'
+        $target = Join-Path $path ($safe + '.evtx')
+        $metadata = Invoke-WudProcess -Context $Context -FilePath 'wevtutil.exe' -ArgumentList @('gl', $channel) -Name ("event-channel-{0}" -f $safe) -TimeoutSeconds 120
+        if ($metadata.ExitCode -eq 0) {
+            $export = Invoke-WudProcess -Context $Context -FilePath 'wevtutil.exe' -ArgumentList @('epl', $channel, $target, '/ow:true') -Name ("event-export-{0}" -f $safe) -TimeoutSeconds 900
+            $null = $exports.Add([pscustomobject][ordered]@{ Channel = $channel; Exported = $export.Succeeded; Path = $target; Error = $export.Error })
+        }
+        else {
+            $null = Add-WudCollectionGap -Context $Context -Collector 'events' -Source $channel -Status 'Unavailable' -Detail 'The event channel was unavailable or disabled.'
+            $null = $exports.Add([pscustomobject][ordered]@{ Channel = $channel; Exported = $false; Path = $null; Error = 'Channel unavailable or disabled.' })
+        }
+    }
+    $start = (Get-Date).AddDays(-[int]$Context.Settings.eventLookbackDays)
+    $events = New-Object Collections.ArrayList
+    foreach ($log in $channels) {
+        try {
+            foreach ($event in @(Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $start; Level = @(1, 2, 3) } -ErrorAction Stop | Select-Object -First 5000)) {
+                $null = $events.Add([pscustomobject][ordered]@{
+                    TimeCreated = $event.TimeCreated
+                    LogName     = $event.LogName
+                    Provider    = $event.ProviderName
+                    Id          = $event.Id
+                    Level       = $event.LevelDisplayName
+                    RecordId    = $event.RecordId
+                    ProcessId   = $event.ProcessId
+                    Message     = $event.Message
+                })
+            }
+        }
+        catch { }
+    }
+    $reliability = @()
+    try { $reliability = @(Get-CimInstance Win32_ReliabilityRecords -ErrorAction Stop | Where-Object { $_.TimeGenerated -ge $start } | Select-Object TimeGenerated, SourceName, ProductName, EventIdentifier, Message, InsertionStrings) } catch { }
+    Write-WudJsonAtomic -Path (Join-Path $path 'event-exports.json') -InputObject @($exports)
+    Write-WudJsonAtomic -Path (Join-Path $path 'errors-and-warnings.json') -InputObject @($events) -Depth 10
+    $eventRows = @($events | ForEach-Object {
+        [pscustomobject][ordered]@{
+            TimeCreated = $_.TimeCreated; LogName = ConvertTo-WudCsvCell $_.LogName; Provider = ConvertTo-WudCsvCell $_.Provider
+            Id = $_.Id; Level = ConvertTo-WudCsvCell $_.Level; RecordId = $_.RecordId; ProcessId = $_.ProcessId
+            Message = ConvertTo-WudCsvCell $_.Message
+        }
+    })
+    $eventCsvPath = Join-Path $path 'errors-and-warnings.csv'
+    if (@($eventRows).Count -gt 0) { @($eventRows) | Export-Csv -LiteralPath $eventCsvPath -NoTypeInformation -Encoding UTF8 }
+    else { Write-WudText -Path $eventCsvPath -Text ('"TimeCreated","LogName","Provider","Id","Level","RecordId","ProcessId","Message"' + [Environment]::NewLine) }
+    Write-WudJsonAtomic -Path (Join-Path $path 'reliability.json') -InputObject $reliability -Depth 10
+}
+
+function Get-WudSetupDiagExecutable {
+    param($Context)
+    $candidates = New-Object Collections.ArrayList
+    $toolCache = New-WudDirectory -Path (Join-Path $env:ProgramData 'Win11UpgradeDiag\Tools')
+    $cached = Join-Path $toolCache 'SetupDiag.exe'
+    $cacheMetadataPath = Join-Path $toolCache 'SetupDiag.metadata.json'
+    if (Test-Path -LiteralPath $cached) { $null = $candidates.Add($cached) }
+    foreach ($candidate in @(
+        (Join-Path $env:SystemDrive '$WINDOWS.~BT\Sources\SetupDiag.exe'),
+        (Join-Path $env:SystemDrive 'Windows.old\$WINDOWS.~BT\Sources\SetupDiag.exe')
+    )) {
+        if (Test-Path -LiteralPath $candidate) { $null = $candidates.Add($candidate) }
+    }
+    if (-not $Context.NoInternet) {
+        $temporary = Join-Path $toolCache ("SetupDiag-{0}.download" -f [Guid]::NewGuid().ToString('N'))
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $request = [Net.HttpWebRequest]::Create([string]$Context.Settings.setupDiagDownloadUrl)
+            $request.Method = 'GET'
+            $request.AllowAutoRedirect = $true
+            $request.MaximumAutomaticRedirections = 10
+            $request.Timeout = 120000
+            $request.ReadWriteTimeout = 120000
+            $request.UserAgent = "Win11UpgradeDiag/$($Context.ToolVersion)"
+            if ($request.Proxy) { $request.Proxy.Credentials = [Net.CredentialCache]::DefaultNetworkCredentials }
+            $response = $null
+            $sourceStream = $null
+            $destinationStream = $null
+            try {
+                $response = $request.GetResponse()
+                $finalUri = $response.ResponseUri.AbsoluteUri
+                $sourceStream = $response.GetResponseStream()
+                $destinationStream = [IO.File]::Open($temporary, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                $sourceStream.CopyTo($destinationStream)
+            }
+            finally {
+                if ($destinationStream) { $destinationStream.Dispose() }
+                if ($sourceStream) { $sourceStream.Dispose() }
+                if ($response) { $response.Close() }
+            }
+            $finalHost = ([Uri]$finalUri).DnsSafeHost
+            if ($finalHost -notmatch '(?i)(^|\.)(microsoft\.com|windowsupdate\.com)$') { throw "SetupDiag redirected to an unapproved host: $finalHost" }
+            $signature = Get-AuthenticodeSignature -FilePath $temporary
+            $subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }
+            if ($signature.Status -ne 'Valid' -or $subject -notmatch 'Microsoft') { throw "Downloaded SetupDiag signature was not valid Microsoft code signing (status: $($signature.Status), subject: $subject)." }
+            $downloadedItem = Get-Item -LiteralPath $temporary
+            if ([string]::IsNullOrWhiteSpace([string]$downloadedItem.VersionInfo.FileVersion) -or [string]$downloadedItem.VersionInfo.FileVersion -notmatch '\d+\.\d+') { throw 'Downloaded SetupDiag did not expose a valid file version.' }
+            $downloadIdentity = '{0} {1} {2}' -f $downloadedItem.VersionInfo.OriginalFilename, $downloadedItem.VersionInfo.FileDescription, $downloadedItem.VersionInfo.ProductName
+            if ($downloadIdentity -notmatch '(?i)SetupDiag') { throw 'The downloaded Microsoft-signed file did not identify itself as SetupDiag.' }
+            Move-Item -LiteralPath $temporary -Destination $cached -Force
+            $cachedItem = Get-Item -LiteralPath $cached
+            Write-WudJsonAtomic -Path $cacheMetadataPath -InputObject ([pscustomobject][ordered]@{
+                RequestedUri = [string]$Context.Settings.setupDiagDownloadUrl
+                FinalUri = $finalUri
+                DownloadedUtc = [DateTime]::UtcNow.ToString('o')
+                Version = $cachedItem.VersionInfo.FileVersion
+                Signer = $subject
+                Sha256 = Get-WudFileHashSafe -Path $cached
+            })
+            $null = $candidates.Insert(0, $cached)
+        }
+        catch {
+            if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+            Write-WudLog -Context $Context -Level WARN -Message ("Could not refresh SetupDiag: {0}" -f $_.Exception.Message)
+        }
+    }
+    $verified = New-Object Collections.ArrayList
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        try {
+            $signature = Get-AuthenticodeSignature -FilePath $candidate
+            $subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }
+            if ($signature.Status -eq 'Valid' -and $subject -match 'Microsoft') {
+                $item = Get-Item -LiteralPath $candidate
+                if ([string]::IsNullOrWhiteSpace([string]$item.VersionInfo.FileVersion) -or [string]$item.VersionInfo.FileVersion -notmatch '\d+\.\d+') { continue }
+                $candidateIdentity = '{0} {1} {2}' -f $item.VersionInfo.OriginalFilename, $item.VersionInfo.FileDescription, $item.VersionInfo.ProductName
+                if ($candidateIdentity -notmatch '(?i)SetupDiag') { continue }
+                $sourceUri = 'Local system copy'
+                if ($candidate -eq $cached -and (Test-Path -LiteralPath $cacheMetadataPath)) {
+                    try { $sourceUri = [string](Read-WudJson -Path $cacheMetadataPath).FinalUri } catch { }
+                }
+                $null = $verified.Add([pscustomobject]@{ Path = $candidate; Version = $item.VersionInfo.FileVersion; SignatureStatus = [string]$signature.Status; Signer = $subject; SourceUri = $sourceUri; Sha256 = Get-WudFileHashSafe $candidate })
+            }
+        }
+        catch { }
+    }
+    if (@($verified).Count -eq 0) { return $null }
+    return @($verified | Sort-Object { try { [Version]$_.Version } catch { [Version]'0.0' } } -Descending)[0]
+}
+
+function Invoke-WudSetupDiagCollector {
+    param($Context)
+    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'SetupDiag')
+    $tool = Get-WudSetupDiagExecutable -Context $Context
+    if (-not $tool) {
+        $null = Add-WudCollectionGap -Context $Context -Collector 'setupdiag' -Source 'SetupDiag.exe' -Status 'Unavailable' -Detail 'No Microsoft-signed SetupDiag executable was available.'
+        Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-tool.json') -InputObject ([pscustomobject]@{ Available = $false; Reason = 'No Microsoft-signed SetupDiag executable was available.' })
+        return
+    }
+    Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-tool.json') -InputObject ([pscustomobject]@{ Available = $true; Tool = $tool })
+    $output = Join-Path $path 'SetupDiagResults.json'
+    $result = Invoke-WudProcess -Context $Context -FilePath $tool.Path -ArgumentList @(("/Output:{0}" -f $output), ("/LogsPath:{0}" -f $Context.EvidencePath), '/Format:json', '/ZipLogs:False', '/NoTel', '/Verbose') -Name 'setupdiag' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.setupDiag) -SuccessExitCodes @(0, 1) -WorkingDirectory $path
+    Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-execution.json') -InputObject $result -Depth 20
+}
+
+function Invoke-WudAllCollectors {
+    param([Parameter(Mandatory = $true)]$Context)
+    $null = Invoke-WudCollector $Context 'identity' 'Device, operating system, build, and attempt identity' { Invoke-WudIdentityCollector $Context } $true
+    $null = Invoke-WudCollector $Context 'hardware' 'Hardware, firmware, boot, encryption, storage, and partitions' { Invoke-WudHardwareCollector $Context } $true
+    $null = Invoke-WudCollector $Context 'software' 'Applications, AppX, features, languages, services, profiles, and filters' { Invoke-WudSoftwareCollector $Context }
+    $null = Invoke-WudCollector $Context 'drivers' 'PnP devices, problem codes, and driver inventory' { Invoke-WudDriverCollector $Context }
+    $null = Invoke-WudCollector $Context 'management' 'Update ownership, GPO, MDM, services, proxy, network, and connectivity' { Invoke-WudManagementCollector $Context }
+    $null = Invoke-WudCollector $Context 'servicing' 'Update history, packages, pending reboot, and servicing state' { Invoke-WudServicingCollector $Context } $true
+    $null = Invoke-WudCollector $Context 'active-health' 'Bounded DISM ScanHealth and SFC verify-only checks' { Invoke-WudActiveHealthCollector $Context }
+    $null = Invoke-WudCollector $Context 'appraiser' 'Microsoft Compatibility Appraiser refresh' { Invoke-WudAppraiserCollector $Context }
+    $null = Invoke-WudCollector $Context 'media-compatibility' 'Optional target-media compatibility scan only' { Invoke-WudMediaCompatibilityCollector $Context }
+    $null = Invoke-WudCollector $Context 'windows-update' 'Windows Update and Delivery Optimization conversion' { Invoke-WudWindowsUpdateLogCollector $Context }
+    $null = Invoke-WudCollector $Context 'raw-evidence' 'Setup, rollback, servicing, management, crash, and transport evidence' { Invoke-WudRawEvidenceCollector $Context } $true
+    $null = Invoke-WudCollector $Context 'events' 'Relevant event channels, reliability, errors, and warnings' { Invoke-WudEventCollector $Context }
+    $null = Invoke-WudCollector $Context 'setupdiag' 'Microsoft SetupDiag offline analysis with telemetry disabled' { Invoke-WudSetupDiagCollector $Context }
+    $Context.Inventory['Provenance'] = [pscustomobject][ordered]@{ ProcessRecords = @($Context.ProcessRecords); CollectionGaps = @($Context.CollectionGaps) }
+    Write-WudJsonAtomic -Path (Join-Path $Context.SnapshotPath 'collector-records.json') -InputObject @($Context.CollectorRecords)
+    Write-WudJsonAtomic -Path (Join-Path $Context.SnapshotPath 'inventory.json') -InputObject $Context.Inventory -Depth 30
+}
+
+Export-ModuleMember -Function @('Invoke-WudAllCollectors', 'Get-WudPendingRebootState', 'Get-WudInstalledApplications')
