@@ -92,6 +92,8 @@ Duration depends on storage performance, log volume, and component health:
 
 Each external process has a configured timeout. A timeout is a recorded coverage gap rather than an unbounded hang.
 
+Archive construction uses Windows extended-length paths when Windows PowerShell 5.1 cannot open a deeply nested staged file normally. Filesystem reparse points are indexed but their targets are not followed into an archive, because a target can leave the bounded evidence tree. If a regular staged file genuinely disappears or remains unreadable, the manifest records its exact path and archive status; the ZIP contains no fabricated empty replacement.
+
 ## Common operational conditions
 
 ### Report says materially incomplete

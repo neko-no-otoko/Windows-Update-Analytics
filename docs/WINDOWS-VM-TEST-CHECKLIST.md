@@ -104,6 +104,9 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 
 - [ ] All v1.1 final artifacts exist and are nonempty when applicable.
 - [ ] `Evidence.zip` reopens and all archived hashes match the manifest.
+- [ ] A staged evidence file with an absolute path longer than 260 characters is hashed and included in `Evidence.zip` under Windows PowerShell 5.1.
+- [ ] A broken or external reparse point is indexed as `ArchiveReparsePointSkipped`, is not followed, and creates no empty ZIP entry.
+- [ ] A regular file removed between evidence inventory and archive creation is recorded as `ArchiveSourceMissing` and creates no empty ZIP entry.
 - [ ] `Checksums.sha256` validates after local and UNC copies.
 - [ ] Every fact has an indexed evidence reference or an explicitly documented original-source locator.
 - [ ] `Summary.json` reports numeric schema `1` and semantic schema `1.1.0`, and round-trips through the fleet ingestion parser.

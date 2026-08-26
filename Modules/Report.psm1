@@ -64,19 +64,38 @@ function New-WudEvidenceArchive {
         $archive = New-Object IO.Compression.ZipArchive($zipStream, [IO.Compression.ZipArchiveMode]::Create, $false)
         foreach ($file in Get-ChildItem -LiteralPath $SourcePath -File -Recurse -Force -ErrorAction Stop) {
             $relative = (Get-WudRelativePath -BasePath $SourcePath -Path $file.FullName).Replace('\', '/')
-            $entry = $archive.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
-            $entry.LastWriteTime = $file.LastWriteTime
+            $isReparsePoint = ([int]$file.Attributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0
+            if ($isReparsePoint) {
+                if ($Context) {
+                    $detail = 'The staged item is a filesystem reparse point. Its target was not followed or duplicated into the ZIP.'
+                    $null = Add-WudCollectionGap -Context $Context -Collector 'report-archive' -Source $file.FullName -Status 'ArchiveReparsePointSkipped' -Detail $detail
+                    Write-WudLog -Context $Context -Level INFO -Message ("Indexed reparse point was intentionally excluded from the evidence archive: {0}" -f $file.FullName)
+                }
+                continue
+            }
             $sourceStream = $null
             $entryStream = $null
             try {
-                $sourceStream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+                # Open the source before creating its entry. A missing, broken,
+                # or unreadable source must not leave a misleading empty entry.
+                $sourceStream = Open-WudFileReadStream -Path $file.FullName
+                $entry = $archive.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
+                if ($file.LastWriteTime.Year -ge 1980 -and $file.LastWriteTime.Year -le 2107) {
+                    $entry.LastWriteTime = $file.LastWriteTime
+                }
                 $entryStream = $entry.Open()
                 $sourceStream.CopyTo($entryStream)
             }
             catch {
                 if ($Context) {
-                    $null = Add-WudCollectionGap -Context $Context -Collector 'report-archive' -Source $file.FullName -Status 'ArchiveReadFailed' -Detail $_.Exception.Message
-                    Write-WudLog -Context $Context -Level WARN -Message ("Evidence could not be added to the archive: {0}: {1}" -f $file.FullName, $_.Exception.Message)
+                    $archiveException = $_.Exception
+                    while ($archiveException.InnerException) { $archiveException = $archiveException.InnerException }
+                    $probePath = if (Test-WudIsWindows) { ConvertTo-WudExtendedLengthPath -Path $file.FullName } else { $file.FullName }
+                    $existsAtFailure = [IO.File]::Exists($probePath)
+                    $status = if (-not $existsAtFailure) { 'ArchiveSourceMissing' } elseif ($file.FullName.Length -ge 248) { 'ArchiveLongPathReadFailed' } else { 'ArchiveReadFailed' }
+                    $detail = '{0}: {1} PathLength={2}; ExistsAtFailure={3}; ReparsePoint=False' -f $archiveException.GetType().FullName, $archiveException.Message, $file.FullName.Length, $existsAtFailure
+                    $null = Add-WudCollectionGap -Context $Context -Collector 'report-archive' -Source $file.FullName -Status $status -Detail $detail
+                    Write-WudLog -Context $Context -Level WARN -Message ("Evidence could not be added to the archive: {0}: {1}" -f $file.FullName, $detail)
                 }
             }
             finally {
@@ -103,7 +122,10 @@ function Test-WudEvidenceArchiveIntegrity {
     try {
         $entries = @{}
         foreach ($entry in $archive.Entries) { $entries[$entry.FullName.ToLowerInvariant()] = $entry }
-        foreach ($item in @($EvidenceManifest)) {
+        $expectedEvidence = @($EvidenceManifest | Where-Object {
+            -not $_.PSObject.Properties['ArchiveEligible'] -or [bool]$_.ArchiveEligible
+        })
+        foreach ($item in $expectedEvidence) {
             $name = ([string]$item.RelativePath).Replace('\', '/').ToLowerInvariant()
             if (-not $entries.ContainsKey($name)) { $null = $missing.Add($item.RelativePath); continue }
             if (-not $item.Sha256) { continue }
@@ -122,7 +144,7 @@ function Test-WudEvidenceArchiveIntegrity {
         }
         return [pscustomobject][ordered]@{
             Verified       = (@($missing).Count -eq 0 -and @($mismatched).Count -eq 0)
-            ExpectedFiles  = @($EvidenceManifest).Count
+            ExpectedFiles  = @($expectedEvidence).Count
             ArchiveEntries = $archive.Entries.Count
             Missing        = @($missing)
             HashMismatches = @($mismatched)
@@ -676,7 +698,9 @@ function Export-WudReportArtifacts {
     Copy-WudToolStateForArchive -Context $Context
     $collectorRecords = Get-WudAllCollectorRecords -Context $Context
     $evidenceManifest = @(Get-WudFileInventory -RootPath $Context.EvidencePath)
-    foreach ($unhashed in @($evidenceManifest | Where-Object { -not $_.Sha256 })) {
+    foreach ($unhashed in @($evidenceManifest | Where-Object {
+        (-not $_.Sha256) -and (-not $_.PSObject.Properties['ArchiveEligible'] -or [bool]$_.ArchiveEligible)
+    })) {
         $null = Add-WudCollectionGap -Context $Context -Collector 'report-manifest' -Source $unhashed.StagedPath -Status 'HashUnavailable' -Detail 'The staged evidence file was indexed, but SHA-256 calculation did not complete.'
     }
     $evidenceZip = Join-Path $Context.OutputPath 'Evidence.zip'

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2 — 2026-08-26
+
+- Hardened `Evidence.zip` and `ReviewBundle.zip` source reads for Windows PowerShell 5.1 by retrying local and UNC files with Windows extended-length paths.
+- Evidence hashing now uses the same long-path-aware, read/write/delete-sharing stream logic as archive construction.
+- Opens each evidence source before creating its ZIP entry, preventing an unavailable source from leaving a misleading empty entry.
+- Indexes filesystem reparse points without following their targets outside the staged evidence tree; they are explicitly recorded as optional archive exclusions.
+- Adds factual archive-failure classifications for a genuinely missing source, a remaining long-path failure, and another read failure, including path length, existence-at-failure, and reparse status.
+- Added a regression that hashes and archives evidence from a path longer than 300 characters.
+
 ## 1.1.1 — 2026-08-26
 
 - Standardized the default finalized-output parent for interactive and SYSTEM runs on `%PUBLIC%\Documents` (`C:\Users\Public\Documents` on a standard installation).

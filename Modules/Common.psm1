@@ -441,10 +441,54 @@ function Get-WudRelativePath {
     catch { return $Path }
 }
 
+function ConvertTo-WudExtendedLengthPath {
+    <#
+        Windows PowerShell 5.1 can enumerate a staged file and still fail to
+        open it when its absolute path crosses the legacy Win32 path limit.
+        The extended-length prefix keeps the same local/UNC target while
+        bypassing that normalization limit for System.IO stream operations.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$ForceWindows
+    )
+    $isWindowsPath = $ForceWindows -or (Test-WudIsWindows)
+    $fullPath = if ($ForceWindows) { $Path } else { [IO.Path]::GetFullPath($Path) }
+    if (-not $isWindowsPath -or $fullPath.StartsWith('\\?\', [StringComparison]::Ordinal)) { return $fullPath }
+    if ($fullPath.StartsWith('\\', [StringComparison]::Ordinal)) {
+        return '\\?\UNC\' + $fullPath.Substring(2)
+    }
+    return '\\?\' + $fullPath
+}
+
+function Open-WudFileReadStream {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $readShare = [IO.FileShare]([int][IO.FileShare]::ReadWrite -bor [int][IO.FileShare]::Delete)
+    try {
+        return [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $readShare)
+    }
+    catch {
+        if (-not (Test-WudIsWindows)) { throw }
+        $extendedPath = ConvertTo-WudExtendedLengthPath -Path $Path
+        if ($extendedPath -eq $Path) { throw }
+        return [IO.File]::Open($extendedPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $readShare)
+    }
+}
+
 function Get-WudFileHashSafe {
     param([Parameter(Mandatory = $true)][string]$Path)
-    try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
+    $stream = $null
+    $sha = $null
+    try {
+        $stream = Open-WudFileReadStream -Path $Path
+        $sha = [Security.Cryptography.SHA256]::Create()
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    }
     catch { return $null }
+    finally {
+        if ($sha) { $sha.Dispose() }
+        if ($stream) { $stream.Dispose() }
+    }
 }
 
 function Get-WudFileInventory {
@@ -452,12 +496,19 @@ function Get-WudFileInventory {
     $items = New-Object Collections.ArrayList
     if (-not (Test-Path -LiteralPath $RootPath)) { return @() }
     foreach ($file in Get-ChildItem -LiteralPath $RootPath -File -Recurse -Force -ErrorAction SilentlyContinue) {
+        $isReparsePoint = ([int]$file.Attributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0
+        $length = $null
+        $lastWriteUtc = $null
+        try { $length = [long]$file.Length } catch { }
+        try { $lastWriteUtc = $file.LastWriteTimeUtc.ToString('o') } catch { }
         $item = [pscustomobject][ordered]@{
             RelativePath = Get-WudRelativePath -BasePath $RootPath -Path $file.FullName
             StagedPath   = $file.FullName
-            Length       = $file.Length
-            LastWriteUtc = $file.LastWriteTimeUtc.ToString('o')
-            Sha256       = Get-WudFileHashSafe -Path $file.FullName
+            Length       = $length
+            LastWriteUtc = $lastWriteUtc
+            Sha256       = if ($isReparsePoint) { $null } else { Get-WudFileHashSafe -Path $file.FullName }
+            IsReparsePoint = $isReparsePoint
+            ArchiveEligible = (-not $isReparsePoint)
         }
         $null = $items.Add($item)
     }
@@ -540,6 +591,7 @@ Export-ModuleMember -Function @(
     'New-WudDirectory', 'Read-WudJson', 'Write-WudJsonAtomic', 'Write-WudText', 'Get-WudTargetDefinition',
     'New-WudRunContext', 'Write-WudLog', 'Invoke-WudProcess', 'Invoke-WudCollector', 'Add-WudFinding',
     'Add-WudTimelineEvent', 'Get-WudRelativePath', 'Get-WudFileHashSafe', 'Get-WudFileInventory',
+    'ConvertTo-WudExtendedLengthPath', 'Open-WudFileReadStream',
     'Export-WudRegistryTree', 'ConvertTo-WudByteSize', 'Get-WudSeverityRank', 'Get-WudConfidenceRank',
     'Resolve-WudExitCode', 'ConvertTo-WudCommandLineArgument', 'ConvertTo-WudCsvCell', 'Add-WudCollectionGap',
     'Get-WudObjectPropertyValue', 'Get-WudErrorDetail'

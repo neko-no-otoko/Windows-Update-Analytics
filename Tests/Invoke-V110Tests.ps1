@@ -126,6 +126,28 @@ try {
     Assert-WudV110 ($entrySource -match '\$OutputPath = Get-WudPublicDocumentsPath') 'Entry point uses Public Documents for every new default run'
     Assert-WudV110 ($entrySource -notmatch '\$env:USERPROFILE\s+''Desktop''') 'Interactive Desktop is no longer a default output destination'
 
+    Assert-WudV110 ((ConvertTo-WudExtendedLengthPath -Path 'C:\ProgramData\Win11UpgradeDiag\evidence.log' -ForceWindows) -eq '\\?\C:\ProgramData\Win11UpgradeDiag\evidence.log') 'Local Windows paths receive an extended-length prefix'
+    Assert-WudV110 ((ConvertTo-WudExtendedLengthPath -Path '\\server\share\evidence.log' -ForceWindows) -eq '\\?\UNC\server\share\evidence.log') 'UNC paths receive the extended-length UNC prefix'
+    $longArchiveSource = New-WudDirectory -Path (Join-Path $testRoot 'long-archive-source')
+    $longDirectory = $longArchiveSource
+    $longSegment = 'evidence-path-segment-0123456789'
+    while ($longDirectory.Length -lt 300) { $longDirectory = Join-Path $longDirectory $longSegment }
+    $longIoDirectory = if (Test-WudIsWindows) { ConvertTo-WudExtendedLengthPath -Path $longDirectory } else { $longDirectory }
+    $null = [IO.Directory]::CreateDirectory($longIoDirectory)
+    $longEvidencePath = Join-Path $longDirectory 'long-path-evidence.txt'
+    $longIoEvidencePath = if (Test-WudIsWindows) { ConvertTo-WudExtendedLengthPath -Path $longEvidencePath } else { $longEvidencePath }
+    [IO.File]::WriteAllText($longIoEvidencePath, 'long-path-evidence', (New-Object Text.UTF8Encoding($false)))
+    Assert-WudV110 ((Get-WudFileHashSafe -Path $longEvidencePath) -eq 'c98747a6da0a27de1de71da305409c9f694a5fc15bbb0ca98475f49960ebfe32') 'Long evidence paths can be opened and hashed'
+    $longArchivePath = Join-Path $testRoot 'long-evidence.zip'
+    New-WudEvidenceArchive -SourcePath $longArchiveSource -DestinationPath $longArchivePath -Context $collectorContext
+    $longArchive = [IO.Compression.ZipFile]::OpenRead($longArchivePath)
+    try { Assert-WudV110 ($longArchive.Entries.Count -eq 1 -and $longArchive.Entries[0].Length -eq 18) 'Long evidence paths are included in the ZIP archive' }
+    finally { $longArchive.Dispose() }
+
+    $reportSource = Get-Content -LiteralPath (Join-Path $toolRoot 'Modules/Report.psm1') -Raw
+    Assert-WudV110 ($reportSource.IndexOf('$sourceStream = Open-WudFileReadStream') -lt $reportSource.IndexOf('$entry = $archive.CreateEntry')) 'Archive source opens before its ZIP entry is created'
+    Assert-WudV110 ($reportSource -match 'ArchiveLongPathReadFailed' -and $reportSource -match 'ArchiveReparsePointSkipped' -and $reportSource -match 'ArchiveSourceMissing') 'Archive omissions receive factual diagnostic classifications'
+
     Write-Host 'All v1.1 fixture tests passed.' -ForegroundColor Cyan
 }
 finally {
