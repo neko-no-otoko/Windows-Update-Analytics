@@ -29,6 +29,30 @@ function Get-WudCurrentUserSid {
     catch { return $null }
 }
 
+function Get-WudPublicDocumentsPath {
+    <#
+        Resolve the machine-wide Public Documents folder without depending on
+        the identity that happens to run a preflight or SYSTEM resume pass.
+    #>
+    $publicRoot = [Environment]::GetEnvironmentVariable('PUBLIC')
+    if (-not [string]::IsNullOrWhiteSpace($publicRoot)) {
+        return [IO.Path]::GetFullPath((Join-Path $publicRoot 'Documents'))
+    }
+
+    try {
+        $knownFolder = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonDocuments)
+        if (-not [string]::IsNullOrWhiteSpace($knownFolder)) {
+            return [IO.Path]::GetFullPath($knownFolder)
+        }
+    }
+    catch { }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:SystemDrive)) {
+        return [IO.Path]::GetFullPath((Join-Path $env:SystemDrive 'Users\Public\Documents'))
+    }
+    throw 'The Windows Public Documents folder could not be resolved.'
+}
+
 function New-WudDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -512,6 +536,7 @@ function Resolve-WudExitCode {
 
 Export-ModuleMember -Function @(
     'Test-WudIsWindows', 'Test-WudAdministrator', 'Test-WudInteractiveUser', 'Get-WudCurrentUserSid',
+    'Get-WudPublicDocumentsPath',
     'New-WudDirectory', 'Read-WudJson', 'Write-WudJsonAtomic', 'Write-WudText', 'Get-WudTargetDefinition',
     'New-WudRunContext', 'Write-WudLog', 'Invoke-WudProcess', 'Invoke-WudCollector', 'Add-WudFinding',
     'Add-WudTimelineEvent', 'Get-WudRelativePath', 'Get-WudFileHashSafe', 'Get-WudFileInventory',

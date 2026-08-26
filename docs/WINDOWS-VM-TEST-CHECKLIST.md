@@ -46,6 +46,9 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 
 ## Persistence and idempotency
 
+- [ ] A new interactive run without `-OutputPath` finalizes every report, export, log, archive, and manifest beneath `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`.
+- [ ] A SYSTEM resume uses the exact same saved Public Documents run folder as its preflight pass.
+- [ ] An explicit local `-OutputPath` overrides the Public Documents default, while an older armed run retains its previously saved path.
 - [ ] Preflight copies runtime/state to ProgramData and applies the expected restricted ACL.
 - [ ] SYSTEM startup task runs after success and after rollback.
 - [ ] Three-minute delayed resume does not collect while Setup is still active.

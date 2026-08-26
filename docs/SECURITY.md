@@ -73,6 +73,7 @@ Open reports in a supported browser. Do not weaken browser protections to view t
 
 ## Retention and transfer
 
+- The default finalized-output folder is beneath `%PUBLIC%\Documents`. It is intentionally easy for local technicians to find, but its inherited ACL may permit broader local read access than the protected ProgramData staging folder. Apply organizational ACLs or use `-OutputPath` when evidence requires a more restricted repository.
 - Verify `Checksums.sha256` after copying or archiving.
 - Store outputs only in access-controlled diagnostic repositories.
 - Do not email unencrypted evidence archives.

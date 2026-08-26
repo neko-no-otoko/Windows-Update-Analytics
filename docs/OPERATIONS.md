@@ -6,7 +6,7 @@
 
 1. Copy and extract the bundle to a local folder.
 2. Launch `Start-Win11UpgradeDiag.cmd -Mode Preflight` as the intended technician.
-3. Confirm that the fact report was produced and note its collection coverage. Exit `0` is not a prediction that the upgrade will succeed.
+3. Open the run folder under `%PUBLIC%\Documents`, confirm that the fact report was produced, and note its collection coverage. Exit `0` is not a prediction that the upgrade will succeed.
 4. Leave `%ProgramData%\Win11UpgradeDiag` in place while the organization's existing deployment process performs the upgrade.
 5. After success or rollback, allow the startup task to run. It waits three minutes by default so services and log writers can settle.
 6. Sign in as a technician and review the refreshed output. Use `Report.html` for fast verification and `ReviewBundle.zip` for approved external review. If `-CopyTo` was supplied, invoke `Auto` once interactively if a SYSTEM resume could not reach the share.
@@ -62,7 +62,9 @@ Use `-NoSetupHooks` when another deployment product owns SetupConfig or local ch
 
 ## Output and UNC handling
 
-Collection always stages to ProgramData first. `-OutputPath` must be a local folder and becomes the parent of the unique finalized run folder.
+Collection always stages to ProgramData first. By default, final artifacts are written to `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`, regardless of whether the final pass runs under an interactive administrator or SYSTEM. This keeps `Report.html`, `Collector.log`, normalized exports, `ReviewBundle.zip`, `Evidence.zip`, and their integrity manifests together in a predictable machine-wide location.
+
+`-OutputPath` must be a local folder and explicitly overrides the Public Documents parent for a newly created run. A resumed or disarmed run always honors its saved output path, including for runs created by an older tool version, so preflight and follow-up artifacts are not split across folders.
 
 `-CopyTo` is a post-finalization convenience, not the authoritative storage location. It runs only when an interactive technician token is available and relies on that user's existing access. Failures are logged and do not discard the local result. Use the resulting `Checksums.sha256` at the destination to verify transfer integrity.
 

@@ -113,6 +113,19 @@ try {
     Assert-WudV110 ($collectorSource.IndexOf("'raw-evidence'") -lt $collectorSource.IndexOf("'active-health'")) 'Passive raw capture precedes active diagnostics'
     Assert-WudV110 ($collectorSource -match '/LogPath:\{0\}') 'DISM ScanHealth uses an isolated diagnostic log path'
 
+    $originalPublic = [Environment]::GetEnvironmentVariable('PUBLIC')
+    try {
+        $fixturePublic = Join-Path $testRoot 'Public'
+        [Environment]::SetEnvironmentVariable('PUBLIC', $fixturePublic)
+        Assert-WudV110 ((Get-WudPublicDocumentsPath) -eq ([IO.Path]::GetFullPath((Join-Path $fixturePublic 'Documents')))) 'Default output root resolves to Public Documents'
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('PUBLIC', $originalPublic)
+    }
+    $entrySource = Get-Content -LiteralPath (Join-Path $toolRoot 'Invoke-Win11UpgradeDiag.ps1') -Raw
+    Assert-WudV110 ($entrySource -match '\$OutputPath = Get-WudPublicDocumentsPath') 'Entry point uses Public Documents for every new default run'
+    Assert-WudV110 ($entrySource -notmatch '\$env:USERPROFILE\s+''Desktop''') 'Interactive Desktop is no longer a default output destination'
+
     Write-Host 'All v1.1 fixture tests passed.' -ForegroundColor Cyan
 }
 finally {

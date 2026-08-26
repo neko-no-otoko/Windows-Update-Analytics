@@ -50,6 +50,18 @@ Describe 'Time-zone normalization' {
 }
 
 Describe 'Static data contracts' {
+    It 'resolves default finalized output beneath Public Documents' {
+        $originalPublic = [Environment]::GetEnvironmentVariable('PUBLIC')
+        try {
+            $fixturePublic = Join-Path ([IO.Path]::GetTempPath()) 'WudPublic'
+            [Environment]::SetEnvironmentVariable('PUBLIC', $fixturePublic)
+            Get-WudPublicDocumentsPath | Should -Be ([IO.Path]::GetFullPath((Join-Path $fixturePublic 'Documents')))
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('PUBLIC', $originalPublic)
+        }
+    }
+
     It 'contains a 25H2 target mapping' {
         $target = Get-WudTargetDefinition -ToolRoot $toolRoot -TargetVersion '25H2'
         $target.buildFamily | Should -Be 26200

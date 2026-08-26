@@ -28,7 +28,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$toolVersion = '1.1.0'
+$toolVersion = '1.1.1'
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $context = $null
 $armedState = $null
@@ -200,8 +200,7 @@ try {
         $programRoot = Get-WudProgramDataRoot
         $runPath = Join-Path $programRoot ("Runs\{0}" -f $RunId)
         if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-            if (Test-WudInteractiveUser) { $OutputPath = Join-Path $env:USERPROFILE 'Desktop' }
-            else { $OutputPath = Join-Path $env:PUBLIC 'Documents' }
+            $OutputPath = Get-WudPublicDocumentsPath
         }
         if ($OutputPath -match '^\\\\') { throw '-OutputPath must be a local folder. Use -CopyTo for a UNC destination.' }
         if (-not [string]::IsNullOrWhiteSpace($CopyTo) -and $CopyTo -notmatch '^\\\\') { throw '-CopyTo must be a UNC folder such as \\server\share\folder.' }

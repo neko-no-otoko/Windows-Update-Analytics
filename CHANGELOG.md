@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 — 2026-08-26
+
+- Standardized the default finalized-output parent for interactive and SYSTEM runs on `%PUBLIC%\Documents` (`C:\Users\Public\Documents` on a standard installation).
+- Final reports, normalized exports, `Collector.log`, `ReviewBundle.zip`, `Evidence.zip`, and integrity manifests now remain together in a unique `Win11UpgradeDiag-<Computer>-<RunId>` folder under Public Documents unless the operator explicitly supplies `-OutputPath`.
+- Existing armed runs continue using their saved output path so a single pre/post run is never split between destinations.
+
 ## 1.1.0 — 2026-08-26
 
 - Replaced default causal rule correlation with a fact-only evidence engine. The tool now emits `Observed`, `SourceReported`, `Decoded`, and transparent `Computed` records without naming a root cause.

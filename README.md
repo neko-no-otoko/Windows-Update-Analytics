@@ -9,7 +9,7 @@ The target map is optimized for Windows 11 23H2 to 25H2. The tool treats that pa
 1. Extract the entire bundle to a local folder. Do not run it from inside the ZIP.
 2. Double-click `Start-Win11UpgradeDiag.cmd` and approve the UAC prompt.
 3. Allow the initial collection to finish. Active health checks can make this take from several minutes to more than an hour on a slow or unhealthy machine.
-4. Review `Report.html`. For deeper review, drag `ReviewBundle.zip` into the approved analysis utility. If the run was armed before the upgrade, the follow-up collection runs automatically after success or rollback.
+4. Open the new `Win11UpgradeDiag-<Computer>-<RunId>` folder under `%PUBLIC%\Documents` and review `Report.html`. For deeper review, drag `ReviewBundle.zip` into the approved analysis utility. If the run was armed before the upgrade, the follow-up collection runs automatically after success or rollback.
 
 By default, one-click `Auto` mode starts a preflight run when there is no armed run and no recent upgrade evidence. When a recent attempt is already visible, it performs an after-the-fact forensic run. An armed run is resumed using its saved state.
 
@@ -58,7 +58,7 @@ Examples:
 .\Start-Win11UpgradeDiag.cmd -Mode Disarm
 ```
 
-`-OutputPath` identifies the parent output folder. The tool creates a unique `Win11UpgradeDiag-<Computer>-<RunId>` child folder. `-CopyTo` never stores credentials and is attempted only in an interactive technician session. A SYSTEM resume always stages locally.
+When `-OutputPath` is omitted, every new interactive or SYSTEM-capable run uses `%PUBLIC%\Documents` (`C:\Users\Public\Documents` on a standard installation) as its finalized-output parent. The tool creates a unique `Win11UpgradeDiag-<Computer>-<RunId>` child folder containing the report, exports, logs, archives, and manifests. An explicit `-OutputPath` overrides this default. `-CopyTo` never stores credentials and is attempted only in an interactive technician session. A SYSTEM resume always stages locally before finalizing to the saved local destination.
 
 Media scanning is optional. It requires `-AcceptWindowsEula`, checks the media architecture, language, edition, and target build family where metadata is available, and calls Setup only with `/compat scanonly`. Dynamic Update is disabled for this diagnostic scan so Setup cannot retrieve or apply scan-time updates. Exit code `0xC1900210` is treated as a clean compatibility scan. No installation switch is used.
 
@@ -139,7 +139,7 @@ A setup candidate is included as `WindowsUpdateFeatureUpgrade` only when it pass
 
 - Persistent runtime and runs: `%ProgramData%\Win11UpgradeDiag`
 - Per-run evidence: `%ProgramData%\Win11UpgradeDiag\Runs\<RunId>`
-- Default final result: the initiating technician's Desktop
+- Default finalized result: `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`
 - Windows Update SetupConfig: `%SystemDrive%\Users\Default\AppData\Local\Microsoft\Windows\WSUS\SetupConfig.ini`
 
 See [Operations](docs/OPERATIONS.md), [Collected data](docs/COLLECTED-DATA.md), [Security](docs/SECURITY.md), [output schema](docs/SCHEMA.md), and the [Windows VM test checklist](docs/WINDOWS-VM-TEST-CHECKLIST.md).
