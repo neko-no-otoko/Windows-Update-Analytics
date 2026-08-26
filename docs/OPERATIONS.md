@@ -6,16 +6,16 @@
 
 1. Copy and extract the bundle to a local folder.
 2. Launch `Start-Win11UpgradeDiag.cmd -Mode Preflight` as the intended technician.
-3. Confirm that the report was produced and note its outcome and collection coverage.
+3. Confirm that the fact report was produced and note its collection coverage. Exit `0` is not a prediction that the upgrade will succeed.
 4. Leave `%ProgramData%\Win11UpgradeDiag` in place while the organization's existing deployment process performs the upgrade.
 5. After success or rollback, allow the startup task to run. It waits three minutes by default so services and log writers can settle.
-6. Sign in as a technician and review the refreshed final output. If `-CopyTo` was supplied, invoke `Auto` once interactively if a SYSTEM resume could not reach the share.
+6. Sign in as a technician and review the refreshed output. Use `Report.html` for fast verification and `ReviewBundle.zip` for approved external review. If `-CopyTo` was supplied, invoke `Auto` once interactively if a SYSTEM resume could not reach the share.
 
 Win11UpgradeDiag does not launch or schedule the operating-system upgrade.
 
 ### After an attempted upgrade
 
-Run `Start-Win11UpgradeDiag.cmd -Mode Forensic`. This captures the remaining Panther, Rollback, NewOS, Windows.old, Windows Update, servicing, event, crash, application, driver, hardware, and policy evidence without adding persistence.
+Run `Start-Win11UpgradeDiag.cmd -Mode Forensic`. This captures remaining Panther, Rollback, NewOS, Windows.old, Windows Update, servicing, event, crash, application, driver, hardware, and policy evidence without adding persistence. Initial imaging and ambiguous setup logs remain visible in the evidence index but cannot enter the upgrade timeline without passing every Windows Update gate.
 
 Collect as soon as practical. Windows servicing, Disk Cleanup, Storage Sense, another setup attempt, or log rollover can remove high-value evidence.
 
@@ -66,6 +66,18 @@ Collection always stages to ProgramData first. `-OutputPath` must be a local fol
 
 `-CopyTo` is a post-finalization convenience, not the authoritative storage location. It runs only when an interactive technician token is available and relies on that user's existing access. Failures are logged and do not discard the local result. Use the resulting `Checksums.sha256` at the destination to verify transfer integrity.
 
+### External review workflow
+
+Use `ReviewBundle.zip`, not the much larger `Evidence.zip`, for the first pass in an approved human or AI review utility. The package contains a ready-to-use `REVIEW_PROMPT.md`, but the reviewer should always enforce these boundaries:
+
+1. Read `Case.json` and `CollectionCoverage.json` first.
+2. Analyze only attempts whose `IncludedForUpgradeReview` value is true.
+3. Treat facts as records, not causal conclusions.
+4. Cite `EvidenceRef` for every assertion.
+5. Request the matching full source from `Evidence.zip` only when the bounded excerpt is insufficient.
+
+Win11UpgradeDiag never performs this upload itself and never stores credentials for an external service.
+
 ## Expected duration
 
 Duration depends on storage performance, log volume, and component health:
@@ -82,7 +94,7 @@ Each external process has a configured timeout. A timeout is a recorded coverage
 
 ### Report says materially incomplete
 
-Inspect the Collection Coverage and Raw Evidence Index sections. Typical reasons include:
+Inspect Collection Coverage in `Report.html` and `ReviewBundle.zip/CollectionCoverage.json`. Typical reasons include:
 
 - Running after logs were cleaned or rolled over
 - Locked files or insufficient staging/output capacity
@@ -91,7 +103,7 @@ Inspect the Collection Coverage and Raw Evidence Index sections. Typical reasons
 - Event channels unavailable or disabled
 - Running without access to an offline Windows.old source
 
-The report still presents supported findings, but causal certainty should be bounded by the recorded gaps.
+The report still presents direct facts, but missing evidence can prevent attempt validation or external causal review.
 
 ### No post-reboot report appeared
 
@@ -112,7 +124,7 @@ Re-extract a known-good bundle. Do not edit a runtime file without regenerating 
 
 ### SetupDiag was not used
 
-The tool first looks for an existing or cached SetupDiag. With internet enabled, it follows Microsoft's official redirect, requires a valid Authenticode signature whose signer is Microsoft, records the version/URI/hash, and then invokes `/NoTel` against the copied snapshot. If verification or download fails, local rules continue and the limitation is visible.
+The tool first looks for an existing or cached SetupDiag. With internet enabled, it follows Microsoft's official redirect, requires a valid Authenticode signature whose signer is Microsoft, records the version/URI/hash, and then invokes `/NoTel` against the newest scoped feature-upgrade-style source. If verification/download fails, or no scoped input exists, fact collection continues and the limitation is visible.
 
 ### Compatibility scan was skipped
 

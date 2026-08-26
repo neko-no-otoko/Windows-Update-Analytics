@@ -1,0 +1,5 @@
+2026-08-20T14:12:01Z, Info                  MOUPG  SetupHost initialized for source build 22631 and target build 26200
+2026-08-20T14:12:03Z, Info                  MOUPG  Windows Update UpdateSessionOrchestration owns this feature update session
+2026-08-20T14:31:44Z, Info                  SP     Entering SP_EXECUTION_SAFE_OS
+2026-08-20T14:32:09Z, Error                 SP     Driver installation failed with result 0xC1900101 - 0x20017 <script>alert('v110')</script>
+2026-08-20T14:33:02Z, Error                 SP     Initiating rollback

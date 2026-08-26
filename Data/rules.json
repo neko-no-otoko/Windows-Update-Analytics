@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "1.0.0",
+  "catalogVersion": "1.1.0",
+  "status": "LegacyDisabledInFactOnlyMode",
   "rules": [
     {
       "id": "WUD-COMPAT-APP-BLOCK",

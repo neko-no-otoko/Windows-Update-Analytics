@@ -218,10 +218,12 @@ function New-WudSummaryObject {
     $primary = $Context.PrimaryFinding
     $ruleCatalog = Read-WudJson -Path (Join-Path $Context.ToolRoot 'Data/rules.json')
     $targetCatalog = Read-WudJson -Path (Join-Path $Context.ToolRoot 'Data/targets.json')
-    return [pscustomobject][ordered]@{
+    $analysisMode = if ($Context.ReviewData -and (Get-WudProperty $Context.ReviewData 'AnalysisMode')) { [string](Get-WudProperty $Context.ReviewData 'AnalysisMode') } else { 'DeterministicLegacy' }
+    $summaryObject = [pscustomobject][ordered]@{
         SchemaVersion      = 1
-        SchemaSemanticVersion = '1.0.0'
+        SchemaSemanticVersion = '1.1.0'
         ToolVersion        = $Context.ToolVersion
+        AnalysisMode       = $analysisMode
         RuleCatalogVersion = Get-WudProperty $ruleCatalog 'catalogVersion' '1'
         TargetMapVersion   = Get-WudProperty $targetCatalog 'mapVersion' '1'
         RunId              = $Context.RunId
@@ -282,6 +284,25 @@ function New-WudSummaryObject {
         ArtifactHashes       = @($ArtifactRecords)
         Persistence          = Get-WudProperty $Context.Inventory 'Persistence'
     }
+    $summaryObject | Add-Member -NotePropertyName Facts -NotePropertyValue @($Context.Facts)
+    $summaryObject | Add-Member -NotePropertyName FactCounts -NotePropertyValue ([pscustomobject][ordered]@{
+        Observed       = @($Context.Facts | Where-Object FactType -eq 'Observed').Count
+        SourceReported = @($Context.Facts | Where-Object FactType -eq 'SourceReported').Count
+        Decoded        = @($Context.Facts | Where-Object FactType -eq 'Decoded').Count
+        Computed       = @($Context.Facts | Where-Object FactType -eq 'Computed').Count
+        Included       = @($Context.Facts | Where-Object ScopeStatus -eq 'Included').Count
+        ContextOnly    = @($Context.Facts | Where-Object ScopeStatus -eq 'ContextOnly').Count
+        Excluded       = @($Context.Facts | Where-Object ScopeStatus -eq 'Excluded').Count
+        Total          = @($Context.Facts).Count
+    })
+    $summaryObject | Add-Member -NotePropertyName AttemptScope -NotePropertyValue ([pscustomobject][ordered]@{
+        ValidatedWindowsUpdate = @($Context.Attempts | Where-Object { [bool](Get-WudProperty $_ 'IncludedForUpgradeReview' $false) }).Count
+        Excluded = @($Context.Attempts | Where-Object { -not [bool](Get-WudProperty $_ 'IncludedForUpgradeReview' $false) }).Count
+        Classifications = @($Context.Attempts | Group-Object { [string](Get-WudProperty $_ 'Classification' 'LegacyUnclassified') } | ForEach-Object { [pscustomobject]@{ Classification = $_.Name; Count = $_.Count } })
+    })
+    $summaryObject | Add-Member -NotePropertyName ExcludedEvidence -NotePropertyValue @($Context.ExcludedEvidence)
+    $summaryObject | Add-Member -NotePropertyName ReviewBundle -NotePropertyValue $Context.ReviewBundle
+    return $summaryObject
 }
 
 function Add-WudHtmlLine {
@@ -486,6 +507,115 @@ function Build-WudReportHtml {
     return $builder.ToString()
 }
 
+function ConvertTo-WudFactDisplay {
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [string]) { return [string]$Value }
+    try { return ($Value | ConvertTo-Json -Compress -Depth 12) }
+    catch { return [string]$Value }
+}
+
+function Build-WudFactReportHtml {
+    param($Context, $Summary, $EvidenceManifest, $CollectorRecords)
+    $css = Get-Content -LiteralPath (Join-Path $Context.ToolRoot 'Assets/report.css') -Raw
+    $javascript = Get-Content -LiteralPath (Join-Path $Context.ToolRoot 'Assets/report.js') -Raw
+    $builder = New-Object Text.StringBuilder
+    $nonceBytes = New-Object byte[] 18
+    $random = New-Object Security.Cryptography.RNGCryptoServiceProvider
+    try { $random.GetBytes($nonceBytes) } finally { $random.Dispose() }
+    $nonce = [Convert]::ToBase64String($nonceBytes)
+    $outcomeClass = Get-WudOutcomeCssClass -Outcome $Summary.Outcome
+    $coverageTotal = @($CollectorRecords).Count
+    $coverageGood = @($CollectorRecords | Where-Object Status -eq 'Succeeded').Count
+    $coverageText = if (-not $Summary.CollectionComplete) { 'Materially incomplete' } else { '{0}/{1} collectors succeeded' -f $coverageGood, $coverageTotal }
+    $validatedAttempts = @($Context.Attempts | Where-Object { [bool](Get-WudProperty $_ 'IncludedForUpgradeReview' $false) })
+    $excludedAttempts = @($Context.Attempts | Where-Object { -not [bool](Get-WudProperty $_ 'IncludedForUpgradeReview' $false) })
+
+    Add-WudHtmlLine $builder '<!doctype html>'
+    Add-WudHtmlLine $builder '<html lang="en"><head><meta charset="utf-8">'
+    Add-WudHtmlLine $builder '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    Add-WudHtmlLine $builder ('<meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; base-uri &#39;none&#39;; object-src &#39;none&#39;; form-action &#39;none&#39;; style-src &#39;nonce-{0}&#39;; script-src &#39;nonce-{0}&#39;; img-src data:; font-src data:">' -f $nonce)
+    Add-WudHtmlLine $builder ('<title>Windows Update Analytics — {0} — {1}</title>' -f (ConvertTo-WudHtmlText $Summary.Device.ComputerName), (ConvertTo-WudHtmlText $Summary.Outcome))
+    Add-WudHtmlLine $builder ('<style nonce="{0}">{1}</style></head><body>' -f $nonce, $css)
+    Add-WudHtmlLine $builder '<div class="sensitive-banner">SENSITIVE DIAGNOSTIC DATA — Contains device, user, domain, network, software, and log identifiers.</div>'
+    Add-WudHtmlLine $builder '<nav class="topbar" aria-label="Report controls"><div class="brand"><span class="brand-mark">W</span><span>Windows Update Analytics 1.1</span></div><div class="top-actions"><button id="theme-toggle" type="button">Theme</button><button id="print-report" type="button">Print / PDF</button></div></nav><main>'
+    Add-WudHtmlLine $builder ('<header class="hero {0}"><div class="eyebrow">Fact-only Windows feature-update evidence</div><h1>{1}</h1><span class="outcome-pill {0}">{2}</span><div class="hero-meta"><span><strong>Device:</strong> {3}</span><span><strong>Run:</strong> <code>{4}</code></span><span><strong>Completed:</strong> {5}</span></div></header>' -f $outcomeClass, (ConvertTo-WudHtmlText $Summary.Outcome), (ConvertTo-WudHtmlText $coverageText), (ConvertTo-WudHtmlText $Summary.Device.ComputerName), (ConvertTo-WudHtmlText $Summary.RunId), (ConvertTo-WudHtmlText $Summary.CompletedUtc))
+    Add-WudHtmlLine $builder '<section class="panel scope-notice"><h2>Interpretation boundary</h2><p>This report presents direct observations, source-reported results, deterministic code decodes, and transparent scope computations. It does <strong>not</strong> name a root cause or treat temporal proximity as causation.</p><p><strong>Upgrade timeline rule:</strong> only setup evidence that passed all Windows Update ownership, feature-upgrade, time-window, target, completed-image, and contamination-exclusion gates appears in the included upgrade timeline.</p></section>'
+    Add-WudHtmlLine $builder '<section class="summary-grid" aria-label="Case summary">'
+    Add-WudHtmlLine $builder ('<div class="metric"><div class="metric-label">Current OS</div><div class="metric-value">{0} ({1}.{2})</div><div class="metric-detail">{3}</div></div>' -f (ConvertTo-WudHtmlText $Summary.CurrentOs.DisplayVersion), (ConvertTo-WudHtmlText $Summary.CurrentOs.Build), (ConvertTo-WudHtmlText $Summary.CurrentOs.UBR), (ConvertTo-WudHtmlText $Summary.CurrentOs.Edition))
+    Add-WudHtmlLine $builder ('<div class="metric"><div class="metric-label">Diagnostic target</div><div class="metric-value">{0}</div><div class="metric-detail">Build family {1}</div></div>' -f (ConvertTo-WudHtmlText $Summary.TargetOs.DisplayVersion), (ConvertTo-WudHtmlText $Summary.TargetOs.BuildFamily))
+    Add-WudHtmlLine $builder ('<div class="metric"><div class="metric-label">Attempt scope</div><div class="metric-value">{0} validated</div><div class="metric-detail">{1} setup candidates excluded</div></div>' -f @($validatedAttempts).Count, @($excludedAttempts).Count)
+    Add-WudHtmlLine $builder ('<div class="metric"><div class="metric-label">Direct facts</div><div class="metric-value">{0}</div><div class="metric-detail">{1} included &middot; {2} context &middot; {3} excluded</div></div>' -f $Summary.FactCounts.Total, $Summary.FactCounts.Included, $Summary.FactCounts.ContextOnly, $Summary.FactCounts.Excluded)
+    Add-WudHtmlLine $builder '</section>'
+
+    Add-WudHtmlLine $builder '<section class="panel review-bundle"><h2>External review package</h2><p><code>ReviewBundle.zip</code> is the compact, provider-neutral package intended for drag-and-drop review. Start with <code>READ_ME_FIRST.md</code> and <code>Case.json</code>. Full-fidelity raw evidence remains in <code>Evidence.zip</code>.</p>'
+    if ($Context.ReviewBundle) {
+        Add-WudHtmlLine $builder ('<p><strong>SHA-256:</strong> <code>{0}</code></p>' -f (ConvertTo-WudHtmlText (Get-WudProperty $Context.ReviewBundle 'Sha256')))
+    }
+    Add-WudHtmlLine $builder '</section>'
+
+    Add-WudHtmlLine $builder '<section class="panel"><h2>Setup evidence scope</h2><div class="table-wrap"><table><thead><tr><th>Included</th><th>Classification</th><th>Window UTC</th><th>Build path</th><th>Gate results</th><th>Evidence</th></tr></thead><tbody>'
+    foreach ($attempt in @($Context.Attempts)) {
+        $included = [bool](Get-WudProperty $attempt 'IncludedForUpgradeReview' $false)
+        $gates = Get-WudProperty $attempt 'Gates'
+        $gateText = if ($gates) { @($gates.PSObject.Properties | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join '; ' } else { 'No v1.1 gate record' }
+        $classification = [string](Get-WudProperty $attempt 'Classification' 'Unclassified')
+        $reason = [string](Get-WudProperty $attempt 'ExclusionReason')
+        Add-WudHtmlLine $builder ('<tr><td><span class="badge {0}">{1}</span></td><td>{2}{3}</td><td>{4}<br>{5}</td><td>{6} &rarr; {7}</td><td>{8}</td><td><code>{9}</code></td></tr>' -f $(if ($included) { 'information' } else { 'neutral' }), $(if ($included) { 'YES' } else { 'NO' }), (ConvertTo-WudHtmlText $classification), $(if ($reason) { '<div class="muted">' + (ConvertTo-WudHtmlText $reason) + '</div>' } else { '' }), (ConvertTo-WudHtmlText (Get-WudProperty $attempt 'StartedUtc')), (ConvertTo-WudHtmlText (Get-WudProperty $attempt 'EndedUtc')), (ConvertTo-WudHtmlText (Get-WudProperty $attempt 'SourceBuild')), (ConvertTo-WudHtmlText (Get-WudProperty $attempt 'TargetBuild')), (ConvertTo-WudHtmlText $gateText), (ConvertTo-WudHtmlText (Get-WudProperty $attempt 'SourcePath')))
+    }
+    if (@($Context.Attempts).Count -eq 0) { Add-WudHtmlLine $builder '<tr><td colspan="6">No setupact candidate was available.</td></tr>' }
+    Add-WudHtmlLine $builder '</tbody></table></div></section>'
+
+    $factCategories = @($Context.Facts | ForEach-Object Category | Sort-Object -Unique)
+    Add-WudHtmlLine $builder '<section class="panel"><h2>Direct fact record</h2><div class="toolbar"><input id="fact-search" type="search" placeholder="Search facts, codes, values, or evidence" aria-label="Search facts"><select id="fact-type-filter" aria-label="Filter by fact type"><option value="">All fact types</option><option value="observed">Observed</option><option value="sourcereported">Source-reported</option><option value="decoded">Decoded</option><option value="computed">Computed</option></select><select id="fact-scope-filter" aria-label="Filter by scope"><option value="">All scopes</option><option value="included">Included</option><option value="contextonly">Context only</option><option value="excluded">Excluded</option></select><select id="fact-category-filter" aria-label="Filter by category"><option value="">All categories</option>'
+    foreach ($category in $factCategories) { Add-WudHtmlLine $builder ('<option value="{0}">{1}</option>' -f (ConvertTo-WudHtmlText $category.ToLowerInvariant()), (ConvertTo-WudHtmlText $category)) }
+    Add-WudHtmlLine $builder '</select></div><div id="fact-cards">'
+    $index = 0
+    foreach ($fact in @($Context.Facts)) {
+        $index++
+        $type = [string](Get-WudProperty $fact 'FactType' 'Observed')
+        $scope = [string](Get-WudProperty $fact 'ScopeStatus' 'Included')
+        $category = [string](Get-WudProperty $fact 'Category' 'Other')
+        $valueText = ConvertTo-WudFactDisplay (Get-WudProperty $fact 'Value')
+        Add-WudHtmlLine $builder ('<details class="finding-card fact-card" data-fact-type="{0}" data-fact-scope="{1}" data-fact-category="{2}"{3}><summary>{4}<span class="badges align-right"><span class="badge information">{5}</span><span class="badge neutral">{6}</span></span></summary><div class="finding-body">' -f (ConvertTo-WudHtmlText $type.ToLowerInvariant()), (ConvertTo-WudHtmlText $scope.ToLowerInvariant()), (ConvertTo-WudHtmlText $category.ToLowerInvariant()), $(if ($index -le 5) { ' open' } else { '' }), (ConvertTo-WudHtmlText (Get-WudProperty $fact 'Statement')), (ConvertTo-WudHtmlText $type), (ConvertTo-WudHtmlText $scope))
+        if ($valueText) { Add-WudHtmlLine $builder ('<p><strong>Value:</strong></p><pre>{0}</pre>' -f (ConvertTo-WudHtmlText $valueText)) }
+        Add-WudHtmlLine $builder ('<p class="evidence-ref"><strong>Evidence:</strong> <code>{0}</code></p>' -f (ConvertTo-WudHtmlText (Get-WudProperty $fact 'EvidenceRef')))
+        if (Get-WudProperty $fact 'AttemptId') { Add-WudHtmlLine $builder ('<p><strong>Attempt:</strong> <code>{0}</code></p>' -f (ConvertTo-WudHtmlText (Get-WudProperty $fact 'AttemptId'))) }
+        if (Get-WudProperty $fact 'Code') { Add-WudHtmlLine $builder ('<p><strong>Code / phase:</strong> <code>{0}</code> &middot; {1} / {2}</p>' -f (ConvertTo-WudHtmlText (Get-WudProperty $fact 'Code')), (ConvertTo-WudHtmlText (Get-WudProperty $fact 'Phase')), (ConvertTo-WudHtmlText (Get-WudProperty $fact 'Operation'))) }
+        if (Get-WudProperty $fact 'Excerpt') { Add-WudHtmlLine $builder ('<pre>{0}</pre>' -f (ConvertTo-WudHtmlText (Get-WudProperty $fact 'Excerpt'))) }
+        Add-WudHtmlLine $builder '</div></details>'
+    }
+    if (@($Context.Facts).Count -eq 0) { Add-WudHtmlLine $builder '<p class="muted">No direct facts were emitted.</p>' }
+    Add-WudHtmlLine $builder '</div><div class="table-wrap"><table id="fact-table"><thead><tr><th data-sort>Type</th><th data-sort>Scope</th><th data-sort>Category</th><th data-sort>Timestamp UTC</th><th>Statement</th><th>Code</th><th>Evidence</th></tr></thead><tbody>'
+    foreach ($fact in @($Context.Facts)) {
+        $type = [string](Get-WudProperty $fact 'FactType' 'Observed'); $scope = [string](Get-WudProperty $fact 'ScopeStatus' 'Included'); $category = [string](Get-WudProperty $fact 'Category' 'Other')
+        Add-WudHtmlLine $builder ('<tr class="fact-row" data-fact-type="{0}" data-fact-scope="{1}" data-fact-category="{2}"><td>{3}</td><td>{4}</td><td>{5}</td><td>{6}</td><td>{7}</td><td><code>{8}</code></td><td><code>{9}</code></td></tr>' -f (ConvertTo-WudHtmlText $type.ToLowerInvariant()), (ConvertTo-WudHtmlText $scope.ToLowerInvariant()), (ConvertTo-WudHtmlText $category.ToLowerInvariant()), (ConvertTo-WudHtmlText $type), (ConvertTo-WudHtmlText $scope), (ConvertTo-WudHtmlText $category), (ConvertTo-WudHtmlText (Get-WudProperty $fact 'TimestampUtc')), (ConvertTo-WudHtmlText (Get-WudProperty $fact 'Statement')), (ConvertTo-WudHtmlText (Get-WudProperty $fact 'Code')), (ConvertTo-WudHtmlText (Get-WudProperty $fact 'EvidenceRef')))
+    }
+    Add-WudHtmlLine $builder '</tbody></table></div></section>'
+
+    Add-WudHtmlLine $builder '<section class="panel"><h2>Included Windows Update timeline</h2><p class="section-note">Rows come only from validated setup logs and source-reported Windows Update history. No event was attached to an attempt solely because it occurred nearby.</p><div class="table-wrap"><table><thead><tr><th>Timestamp UTC</th><th>Attempt</th><th>Type</th><th>Code / phase</th><th>Message</th><th>Evidence</th></tr></thead><tbody>'
+    foreach ($event in @($Context.Timeline)) {
+        Add-WudHtmlLine $builder ('<tr><td>{0}</td><td><code>{1}</code></td><td>{2}</td><td><code>{3}</code><br>{4} / {5}</td><td>{6}</td><td><code>{7}</code></td></tr>' -f (ConvertTo-WudHtmlText (Get-WudProperty $event 'TimestampUtc')), (ConvertTo-WudHtmlText (Get-WudProperty $event 'AttemptId')), (ConvertTo-WudHtmlText (Get-WudProperty $event 'EventType')), (ConvertTo-WudHtmlText (Get-WudProperty $event 'Code')), (ConvertTo-WudHtmlText (Get-WudProperty $event 'Phase')), (ConvertTo-WudHtmlText (Get-WudProperty $event 'Operation')), (ConvertTo-WudHtmlText (Get-WudProperty $event 'Message')), (ConvertTo-WudHtmlText (Get-WudProperty $event 'EvidenceReference')))
+    }
+    if (@($Context.Timeline).Count -eq 0) { Add-WudHtmlLine $builder '<tr><td colspan="6">No included Windows Update timeline rows were emitted.</td></tr>' }
+    Add-WudHtmlLine $builder '</tbody></table></div></section>'
+
+    Add-WudHtmlLine $builder '<section class="panel"><h2>Collection coverage</h2><div class="table-wrap"><table><thead><tr><th>Collector</th><th>Status</th><th>Required</th><th>Duration</th><th>Detail</th></tr></thead><tbody>'
+    foreach ($record in @($CollectorRecords)) {
+        Add-WudHtmlLine $builder ('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3} ms</td><td>{4}</td></tr>' -f (ConvertTo-WudHtmlText (Get-WudProperty $record 'Id')), (ConvertTo-WudHtmlText (Get-WudProperty $record 'Status')), (ConvertTo-WudHtmlText (Get-WudProperty $record 'Required')), (ConvertTo-WudHtmlText (Get-WudProperty $record 'DurationMs')), (ConvertTo-WudHtmlText (Get-WudProperty $record 'Detail')))
+    }
+    Add-WudHtmlLine $builder '</tbody></table></div><h3>Recorded gaps</h3><ul class="compact-list">'
+    foreach ($gap in @($Context.CollectionGaps)) { Add-WudHtmlLine $builder ('<li><strong>{0}</strong> — {1}: {2}</li>' -f (ConvertTo-WudHtmlText (Get-WudProperty $gap 'Status')), (ConvertTo-WudHtmlText (Get-WudProperty $gap 'Source')), (ConvertTo-WudHtmlText (Get-WudProperty $gap 'Detail'))) }
+    if (@($Context.CollectionGaps).Count -eq 0) { Add-WudHtmlLine $builder '<li>No collection gaps were recorded.</li>' }
+    Add-WudHtmlLine $builder '</ul></section>'
+
+    Add-WudHtmlLine $builder ('<section class="panel"><h2>Evidence integrity</h2><p><strong>{0}</strong> staged evidence files were indexed and archived in <code>Evidence.zip</code>. File-level paths, timestamps, sizes, and SHA-256 hashes are available in <code>Manifest.json</code> and <code>ReviewBundle.zip/EvidenceIndex.jsonl</code>.</p></section>' -f @($EvidenceManifest).Count)
+    Add-WudHtmlLine $builder '<footer><p>Windows Update Analytics is diagnostic-only. It does not start an upgrade, apply a repair, bypass a safeguard, or upload evidence.</p></footer></main>'
+    $json = ($Summary | ConvertTo-Json -Depth 50 -Compress).Replace('<', '\u003c').Replace('>', '\u003e').Replace('&', '\u0026')
+    Add-WudHtmlLine $builder ('<script nonce="{0}" type="application/json" id="report-data">{1}</script><script nonce="{0}">{2}</script></body></html>' -f $nonce, $json, $javascript)
+    return $builder.ToString()
+}
+
 function Copy-WudOutputToShare {
     param($Context)
     if ([string]::IsNullOrWhiteSpace($Context.CopyTo)) { return [pscustomobject]@{ Requested = $false; Deferred = $false; Succeeded = $true; Destination = $null; Error = $null } }
@@ -558,6 +688,26 @@ function Export-WudReportArtifacts {
         $null = Add-WudCollectionGap -Context $Context -Collector 'report-archive' -Source $evidenceZip -Status 'IntegrityMismatch' -Detail ((@($archiveVerification.Missing) + @($archiveVerification.HashMismatches)) -join '; ') -Impact 'Material'
     }
     Write-WudJsonAtomic -Path (Join-Path $Context.OutputPath 'Inventory.json') -InputObject $Context.Inventory -Depth 40
+    Write-WudJsonAtomic -Path (Join-Path $Context.OutputPath 'Attempts.json') -InputObject @($Context.Attempts) -Depth 40
+    Write-WudJsonAtomic -Path (Join-Path $Context.OutputPath 'ExcludedEvidence.json') -InputObject @($Context.ExcludedEvidence) -Depth 30
+    $factRows = foreach ($fact in $Context.Facts) {
+        [pscustomobject][ordered]@{
+            FactId        = Get-WudProperty $fact 'FactId'
+            FactType      = Get-WudProperty $fact 'FactType'
+            Category      = Get-WudProperty $fact 'Category'
+            ScopeStatus   = Get-WudProperty $fact 'ScopeStatus'
+            TimestampUtc  = Get-WudProperty $fact 'TimestampUtc'
+            AttemptId     = Get-WudProperty $fact 'AttemptId'
+            Statement     = ConvertTo-WudCsvCell (Get-WudProperty $fact 'Statement')
+            Value         = ConvertTo-WudCsvCell (ConvertTo-WudFactDisplay (Get-WudProperty $fact 'Value'))
+            Code          = Get-WudProperty $fact 'Code'
+            Phase         = Get-WudProperty $fact 'Phase'
+            Operation     = Get-WudProperty $fact 'Operation'
+            EvidenceRef   = ConvertTo-WudCsvCell (Get-WudProperty $fact 'EvidenceRef')
+            ExcerptFile   = Get-WudProperty $fact 'ExcerptFile'
+        }
+    }
+    Export-WudCsvContract -Rows @($factRows) -Headers @('FactId', 'FactType', 'Category', 'ScopeStatus', 'TimestampUtc', 'AttemptId', 'Statement', 'Value', 'Code', 'Phase', 'Operation', 'EvidenceRef', 'ExcerptFile') -Path (Join-Path $Context.OutputPath 'Facts.csv')
     $findingRows = foreach ($finding in $Context.Findings) {
         [pscustomobject][ordered]@{
             FindingId      = $finding.FindingId
@@ -581,7 +731,10 @@ function Export-WudReportArtifacts {
     }
     $findingHeaders = @('FindingId', 'RuleId', 'Severity', 'Category', 'Confidence', 'Status', 'DispositionReason', 'Title', 'ResultCode', 'ExtendCode', 'Codes', 'Phase', 'Operation', 'AffectedEntity', 'Evidence', 'Recommendation', 'References')
     Export-WudCsvContract -Rows @($findingRows) -Headers $findingHeaders -Path (Join-Path $Context.OutputPath 'Findings.csv')
-    $timelineHeaders = @('TimestampUtc', 'LocalOffset', 'TimestampAmbiguous', 'AttemptId', 'Phase', 'Operation', 'Code', 'Component', 'Event', 'Message', 'Severity', 'SourceRef', 'EvidenceReference', 'Entity', 'CorrelationId')
+    $timelineHeaders = if ($Context.ReviewData -and (Get-WudProperty $Context.ReviewData 'AnalysisMode') -eq 'FactOnly') {
+        @('TimestampUtc', 'AttemptId', 'FactId', 'EventType', 'Code', 'Phase', 'Operation', 'Message', 'EvidenceReference')
+    }
+    else { @('TimestampUtc', 'LocalOffset', 'TimestampAmbiguous', 'AttemptId', 'Phase', 'Operation', 'Code', 'Component', 'Event', 'Message', 'Severity', 'SourceRef', 'EvidenceReference', 'Entity', 'CorrelationId') }
     $timelineRows = @($Context.Timeline | ForEach-Object {
         $sourceEvent = $_
         $row = [ordered]@{}
@@ -590,16 +743,16 @@ function Export-WudReportArtifacts {
     })
     Export-WudCsvContract -Rows $timelineRows -Headers $timelineHeaders -Path (Join-Path $Context.OutputPath 'Timeline.csv')
     if (Test-Path -LiteralPath $Context.LogPath) { Copy-Item -LiteralPath $Context.LogPath -Destination (Join-Path $Context.OutputPath 'Collector.log') -Force }
-    $preSummaryArtifacts = @('Evidence.zip', 'Inventory.json', 'Findings.csv', 'Timeline.csv', 'Collector.log') | ForEach-Object { Get-WudArtifactRecord -Path (Join-Path $Context.OutputPath $_) -BasePath $Context.OutputPath } | Where-Object { $_ }
+    $preSummaryArtifacts = @('Evidence.zip', 'ReviewBundle.zip', 'Inventory.json', 'Attempts.json', 'ExcludedEvidence.json', 'Facts.csv', 'Findings.csv', 'Timeline.csv', 'Collector.log') | ForEach-Object { Get-WudArtifactRecord -Path (Join-Path $Context.OutputPath $_) -BasePath $Context.OutputPath } | Where-Object { $_ }
     $summary = New-WudSummaryObject -Context $Context -CollectorRecords $collectorRecords -ArtifactRecords $preSummaryArtifacts
     Write-WudJsonAtomic -Path (Join-Path $Context.OutputPath 'Summary.json') -InputObject $summary -Depth 40
-    $html = Build-WudReportHtml -Context $Context -Summary $summary -EvidenceManifest $evidenceManifest -CollectorRecords $collectorRecords
+    $html = if ($summary.AnalysisMode -eq 'FactOnly') { Build-WudFactReportHtml -Context $Context -Summary $summary -EvidenceManifest $evidenceManifest -CollectorRecords $collectorRecords } else { Build-WudReportHtml -Context $Context -Summary $summary -EvidenceManifest $evidenceManifest -CollectorRecords $collectorRecords }
     Write-WudText -Path (Join-Path $Context.OutputPath 'Report.html') -Text $html
-    $artifactFiles = @('Report.html', 'Summary.json', 'Findings.csv', 'Timeline.csv', 'Inventory.json', 'Evidence.zip', 'Collector.log')
+    $artifactFiles = @('Report.html', 'Summary.json', 'Facts.csv', 'Findings.csv', 'Timeline.csv', 'Attempts.json', 'ExcludedEvidence.json', 'Inventory.json', 'ReviewBundle.zip', 'Evidence.zip', 'Collector.log')
     $artifactManifest = @($artifactFiles | ForEach-Object { Get-WudArtifactRecord -Path (Join-Path $Context.OutputPath $_) -BasePath $Context.OutputPath } | Where-Object { $_ })
     $sourceMappings = Get-WudEvidenceSourceMappings -Context $Context
     $manifest = [pscustomobject][ordered]@{
-        SchemaVersion = 1
+        SchemaVersion = 2
         ToolVersion   = $Context.ToolVersion
         RunId         = $Context.RunId
         Sensitive     = $true

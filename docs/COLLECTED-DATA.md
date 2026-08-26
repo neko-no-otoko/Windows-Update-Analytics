@@ -1,84 +1,73 @@
-# Collected data and resulting insight
+# Collected data and factual output
 
-Win11UpgradeDiag captures full-fidelity diagnostic evidence locally and derives normalized, evidence-linked findings. Availability varies by OS edition, enabled roles, management product, setup stage, retention, localization, and permissions. Missing and skipped sources are reported rather than treated as clean.
+Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes direct records, and records what was unavailable. Version 1.1 deliberately stops before root-cause judgment. Availability varies by Windows edition, management stack, setup stage, retention, localization, and permissions.
 
 ## Collection matrix
 
-| Family | Representative sources | Supported conclusions |
+| Family | Representative sources | Facts available to a reviewer |
 |---|---|---|
-| Device and attempt identity | Computer/model/serial, OS edition/display version/build/UBR, architecture, boot/install time, source OS history, setup timestamps | Source/target path, attempt boundaries, elapsed time, current versus historical evidence, and upgrade outcome |
-| Hardware and firmware | CPU, memory, BIOS/UEFI, TPM, Secure Boot, display/WDDM, battery, disks, storage reliability, partitions/volumes, WinRE, BCD, VHD/safe-mode state, BitLocker metadata | Readiness gaps, firmware/security configuration, capacity risks, unsupported boot state, storage-health concerns, and encryption-related setup risk |
-| Compatibility | AppCompat and target-version experience registry, safeguard state, CompatData/Appraiser XML, Appraiser task result, optional media scan | Explicit application/hardware blocks, system-requirement blocks, safeguard holds, stale intelligence, and clean or failed media scan |
-| Applications and OS composition | Machine and loaded-user uninstall registry, AppX/provisioned packages, capabilities, optional features, packages, languages, profiles, services, security products, filter drivers | Application blockers, FOD/language mismatch, profile-migration surface, and third-party security/filter software to investigate |
-| Devices and drivers | PnP devices/problem codes, signed drivers, driver store, `pnputil`, boot/storage/display/network drivers, SetupAPI logs | `0xC1900101` correlation, problem or unsigned device state, boot-critical driver exposure, and device-install failures |
-| Update ownership and policy | Windows Update/WUfB/WSUS policies, target release/deferral/pause/source/safeguard configuration, GPResult, MDM enrollment, `dsregcmd`, ConfigMgr and Intune logs when present | Update authority, policy conflicts, target pinning, pause/deferral, WSUS/cloud ownership, and likely offer suppression |
-| Transport and orchestration | Windows Update ETL and converted log, Update Orchestrator, Delivery Optimization data/logs, BITS, WinHTTP proxy, DNS/IP/routes, time sync, bounded endpoint checks | Scan, offer, download, staging, install, TLS/proxy/DNS/clock, and source-reachability symptoms |
-| Servicing health | Update history, hotfixes, DISM packages/features, CBS/DISM logs, pending markers, DISM ScanHealth, SFC verify-only | Component corruption, package failures, pending actions, reboot prerequisites, and servicing contribution |
-| Setup, migration, and rollback | Panther, NewOS, Rollback, UnattendGC, MoSetup/BlueBox, migration XML, setup ETL/text, Windows.old traces, SetupDiag output | Setup phase/operation, result/extend-code decoding, final milestone, fatal abort, migration failure, rollback origin, and named app/driver/file |
-| Events, crashes, reliability | Relevant event-channel EVTX exports, normalized events, reliability records, WER metadata, setup dumps/minidumps, WHEA/disk/NTFS/volmgr/BugCheck/Kernel-Power signals | Unexpected reboot/bugcheck, hardware/storage problems, crashing setup participants, and time-nearby supporting evidence |
-| Pre/post comparison | Normalized application, driver, device, service, package, policy, disk, security, and network snapshots | Additions/removals, migration loss, regression, pending state, and before/after configuration changes |
-| Provenance and completeness | Collector version, start/end time, timeout/error/skip status, source/destination, file size, SHA-256 | Reproducibility, chain integrity, missing evidence, and confidence limitations |
+| Identity | Device/model/serial, edition/version/build/UBR, architecture, boot/install times, source OS history, Windows image/setup state | Current source/target state, completed image state, and whether a build transition is directly visible |
+| Hardware | CPU, memory, firmware, TPM, Secure Boot, graphics, battery, disks, reliability, partitions, volumes, WinRE, BCD, BitLocker status | Exact readiness-related values and storage/boot/security state; no claim that a value caused setup to fail |
+| Compatibility | AppCompat/safeguard registry, CompatData/Appraiser XML, task result, optional media scan | Source-reported blocks/warnings and scan-only result, kept separate from a real upgrade attempt |
+| Software | Uninstall registry, AppX/provisioned apps, capabilities, features, languages, profiles, services, security products, filters | Installed component inventory and pre/post differences |
+| Drivers/devices | PnP state/problem codes, signed drivers, driver store, `pnputil`, SetupAPI | Driver/device state and exact source-reported setup/device records |
+| Update ownership/policy | WUA history, Update ID/revision, client application, service/server selection, WUfB/WSUS policy, GPResult, MDM, ConfigMgr, Intune | Direct update owner/provenance, policy values, and feature-update result records |
+| Transport | Windows Update ETL/readable log, USO, Delivery Optimization, BITS, proxy, DNS/IP/routes, time, bounded endpoint tests | Scan/download/install records, endpoints, status codes, and reachability at collection time |
+| Servicing | Update history, packages/hotfixes, CBS/DISM, pending markers, DISM ScanHealth, SFC verify-only | Package/current-health results kept as servicing or tool-generated context unless directly part of a validated upgrade source |
+| Setup/rollback | `$WINDOWS.~BT`, Rollback, Windows.old, SetupCopyLogs, MoSetup/BlueBox, migration files, setup dumps, scoped SetupDiag | Attempt windows, source/target builds, exact failure lines/codes, deterministic phase/operation decodes, and inclusion gates |
+| Events/crashes | EVTX exports, normalized event records, reliability, WER, setup/minidumps, WHEA/disk/NTFS/BugCheck/Kernel-Power | Direct event/crash records. They are not attached to an upgrade attempt based on time alone |
+| Pre/post | Normalized inventory snapshots | Section-level changes plus full baseline/current objects for external comparison |
+| Provenance | Collector version/time/status, source/destination, length, timestamp, SHA-256, archive verification | Reproducibility, evidence integrity, and explicit collection limits |
 
-## Specific active commands
+## Passive-first contamination boundary
 
-The collector may invoke the following diagnostics:
+Each phase captures raw logs before running DISM, SFC, Compatibility Appraiser, media compatibility scan, or SetupDiag. This prevents the current diagnostic pass from being copied back into its own passive baseline.
+
+- DISM ScanHealth uses a run-owned `/LogPath` under `CurrentDiagnostics`.
+- SFC can still write to the system CBS log; because CBS was copied first, that new entry is not part of the same phase's passive snapshot.
+- A later phase may observe an earlier diagnostic record, but CBS/DISM sources remain `GeneralWindowsServicing` or `ToolGenerated`, never upgrade evidence by time alone.
+- SetupDiag is restricted to the newest copied feature-upgrade-style directory and never receives `Windows\Panther`, `Commands`, `CurrentDiagnostics`, or media-scan paths. Its result is emitted only when its exact input attempt later passes all Windows Update gates.
+
+## Windows Update attempt gates
+
+Every setup candidate is preserved in `Attempts.json`. Inclusion requires all of these direct/transparent gates:
+
+1. It is not a byte-identical duplicate already represented by another source.
+2. It is not `/Compat ScanOnly`.
+3. It is not generated by this tool.
+4. It is not in the `Windows\Panther` initial-deployment source and contains no direct imaging/deployment semantics.
+5. It contains feature-upgrade semantics.
+6. Windows Update ownership is present in setup text, WUA history, BlueBox, or the readable Windows Update log.
+7. The ownership evidence overlaps the setup window.
+8. The target version/build is present.
+9. Windows reports a completed image state.
+
+Only then is it `WindowsUpdateFeatureUpgrade`. Missing a gate is an exclusion, not a negative health conclusion.
+
+## Active commands
 
 ```text
-dism.exe /Online /Cleanup-Image /ScanHealth
+dism.exe /Online /Cleanup-Image /ScanHealth /LogPath:<run-owned-path>
 sfc.exe /verifyonly
 Get-WindowsUpdateLog
-Get-DeliveryOptimizationLog and available DO status/configuration commands
-SetupDiag.exe /NoTel /LogsPath <local-evidence-snapshot> ...
+Get-DeliveryOptimizationLog
+SetupDiag.exe /NoTel /LogsPath <scoped-upgrade-source> ...
 setup.exe /auto upgrade /compat scanonly ...
 ```
 
-The media command is gated by matching-media validation and `-AcceptWindowsEula`. Dynamic Update is explicitly disabled. Its intent is compatibility evaluation only, and the engine treats `0xC1900210` as the documented successful scan result.
+The media command requires matching media and explicit `-AcceptWindowsEula`; Dynamic Update is disabled. The tool never runs RestoreHealth, SFC repair, CHKDSK repair, cache deletion, update installation, driver removal, or safeguard bypass.
 
-## Event channels and raw logs
+## Fact types and evidence references
 
-The implementation exports relevant channels where present, including core System, Application, and Setup records and targeted Windows Setup, Windows Update Client, Update Orchestrator, Delivery Optimization, AppCompat, DeviceSetupManager, Kernel-Boot, BitLocker, storage, and reliability sources. Unsupported or absent channels become collector notes, not errors by definition.
+- `Observed`: collector-read value or source line.
+- `SourceReported`: Windows Update, Windows Setup, or scoped SetupDiag result.
+- `Decoded`: documented error symbol or Setup extend-code phase/operation.
+- `Computed`: Boolean scope gate, count, or pre/post comparison.
 
-For text analysis, rules prefer structured SetupDiag, XML, JSON, CSV, registry, and event representations. Free-text lines are a secondary source and receive evidence paths, line numbers when available, timestamps, matched codes, and bounded excerpts.
-
-## Attempt segmentation and confidence
-
-The analyzer groups evidence using setup instance hints, timestamp clusters, source/target build transitions, and reboot boundaries. Evidence that clearly predates the latest attempt is marked `Historical` and does not control the current outcome or exit code.
-
-Findings have four severities and three confidence levels:
-
-- `Blocker`: an explicit condition prevents or terminated the upgrade
-- `Error`: a failed operation or serious contributing condition
-- `Warning`: a material risk or condition requiring review
-- `Information`: explanatory state or a clean/expected result
-- `High`: explicit SetupDiag/compatibility result or tightly matched causal evidence
-- `Medium`: corroborated rule result with a plausible direct relationship
-- `Low`: temporal association, weak entity matching, or locale/free-text limitation
-
-The report suppresses nonfatal noise when a later setup milestone proves success. It still retains the underlying evidence and earlier contributing events.
+Every fact carries an evidence locator. Text excerpts are bounded and HTML/CSV safe. Full source content stays in `Evidence.zip`; compact excerpts and hashes go into `ReviewBundle.zip`.
 
 ## Deliberate exclusions
 
-The tool does not collect:
+The tool never collects passwords, tokens, browser data, Wi-Fi keys, certificate private keys, or BitLocker recovery passwords. It does not upload data, execute AI, name a root cause, infer a driver from `0xC1900101` alone, or link an event to setup solely because timestamps are close.
 
-- Passwords or reusable authentication tokens
-- Browser history, cookies, saved passwords, or profile databases
-- Wi-Fi pre-shared keys
-- Certificate private keys
-- BitLocker recovery passwords
-- Arbitrary document or email contents
-- Cloud-uploaded AI analysis
-
-BitLocker collection is limited to operational status and protector metadata exposed by standard administrative commands; recovery secrets are not requested.
-
-## Dump handling
-
-Setup-specific dumps and ordinary minidumps are included when readable. The system `MEMORY.DMP` is normally represented by path, size, timestamps, and SHA-256 only. `-IncludeLargeDumps` permits a copy only after capacity checks; locked, oversized, or failed copies are explicitly indexed.
-
-## Interpretive limitations
-
-- A clean current snapshot does not prove a transient failure was absent earlier.
-- A nearby event is not automatically causal; time-only correlation is capped at low confidence.
-- Localized free text may reduce confidence, although structured codes and XML remain locale-neutral.
-- Removed Windows.old/Panther/Rollback content can make exact phase attribution impossible.
-- A safeguard identifier may require current Microsoft or OEM release-health context outside the offline report.
-- SetupDiag and local rules are evidence aids, not a replacement for vendor debugging of a faulty driver, firmware, or application.
+`MEMORY.DMP` is metadata and SHA-256 only unless `-IncludeLargeDumps` is requested and capacity permits. Setup-specific and ordinary minidumps are copied by default when readable.

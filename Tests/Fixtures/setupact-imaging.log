@@ -1,0 +1,4 @@
+2026-08-01T08:00:00Z, Info                  Windeploy  IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE
+2026-08-01T08:00:02Z, Info                  MOUPG  SetupHost source build 22631 target build 26200; Windows Update service is available
+2026-08-01T08:00:05Z, Info                  Setup      Applying Windows image from install.wim
+2026-08-01T08:10:00Z, Error                 Setup      Unattend component returned 0x80070002

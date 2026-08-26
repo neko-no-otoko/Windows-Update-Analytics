@@ -67,8 +67,10 @@ Describe 'Static data contracts' {
 
     It 'ships a machine-readable fleet summary schema' {
         $schema = Get-Content -LiteralPath (Join-Path $toolRoot 'Data/Summary.schema.json') -Raw | ConvertFrom-Json
-        $schema.'$id' | Should -Be 'urn:win11upgradediag:summary:1.0.0'
+        $schema.'$id' | Should -Be 'urn:win11upgradediag:summary:1.1.0'
         @($schema.required) | Should -Contain 'Findings'
+        @($schema.required) | Should -Contain 'Facts'
+        @($schema.required) | Should -Contain 'AttemptScope'
         @($schema.required) | Should -Contain 'ArtifactHashes'
     }
 }
@@ -95,5 +97,9 @@ Describe 'Read-only safety contract' {
 Describe 'End-to-end fixture contract' {
     It 'passes parser, correlation, archive, report, schema, persistence, and safety fixtures' {
         { & (Join-Path $PSScriptRoot 'Invoke-FixtureTests.ps1') } | Should -Not -Throw
+    }
+
+    It 'passes v1.1 fact-only, attempt-scope, sparse-object, and review-bundle fixtures' {
+        { & (Join-Path $PSScriptRoot 'Invoke-V110Tests.ps1') } | Should -Not -Throw
     }
 }

@@ -1,5 +1,7 @@
 # Windows VM acceptance checklist
 
+Version 1.1 acceptance must validate the fact-only engine and contamination boundary; v1.0 causal-rule expectations are retained only as regression fixtures and are not the default runtime behavior.
+
 Fixture and parser tests are necessary but not sufficient. Complete this checklist on isolated Windows VMs before expanding beyond a controlled pilot. Record the bundle SHA-256, tool version, VM snapshot, Windows edition/language/build/UBR, architecture, update source, security agents, and observed runtime for every case.
 
 ## Platform matrix
@@ -27,20 +29,19 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 
 ## Core scenarios
 
-- [ ] Clean readiness produces `Ready`, complete coverage, and exit `0`.
-- [ ] Media compatibility `0xC1900210` produces a clean scan finding and never starts installation.
-- [ ] Incompatible application `0xC1900208` identifies the app/file and produces an evidence-linked blocker.
-- [ ] Insufficient OS or system/recovery space produces the correct affected volume and recommendation.
-- [ ] Safeguard hold captures its identifier/status without attempting bypass.
-- [ ] Target-version, deferral, pause, source-selection, or WSUS/cloud conflict identifies update ownership.
-- [ ] Unreachable WSUS or Microsoft endpoint distinguishes DNS/proxy/TLS/time/reachability evidence where possible.
-- [ ] DISM component corruption and CBS/package failure are differentiated from an ordinary pending reboot.
-- [ ] `0xC1900101` rollback maps the last fatal phase/operation and implicated driver/device when supported.
-- [ ] Migration failure identifies setup phase/operation and named profile/app/file evidence.
-- [ ] Setup bugcheck or dump finding links dump metadata and nearby BugCheck/WER/Kernel-Power evidence.
-- [ ] Successful 25H2 upgrade suppresses earlier nonfatal setup noise and produces `Upgrade Succeeded`.
-- [ ] Rollback produces `Rolled Back`, exit `20`, and preserves the last fatal operation.
-- [ ] Several historical attempts are segmented; old blockers are `Historical` and do not control a clean current outcome.
+- [ ] A WUA-owned feature update with matching Setup/BlueBox evidence passes every attempt gate and is the only setup source in the included timeline.
+- [ ] Fresh-imaging `Windows\Panther` logs are classified `InitialDeploymentOrImaging`, even when they mention Windows Update or the target build.
+- [ ] Media `/Compat ScanOnly` records are classified `DiagnosticCompatibilityScan` and never appear as a real upgrade attempt.
+- [ ] ConfigMgr/media feature upgrades with an explicit non-Windows-Update owner remain `NonWindowsUpdateFeatureUpgrade`.
+- [ ] Ambiguous Setup logs remain `UnclassifiedSetupEvidence` rather than being promoted by timestamp proximity.
+
+- [ ] Clean preflight produces complete factual coverage, outcome `Unknown`, and exit `0` without claiming readiness.
+- [ ] Media compatibility `0xC1900210` is retained as a source-reported scan-only fact and never starts installation.
+- [ ] Application, disk-space, safeguard, policy, connectivity, servicing, driver, migration, and crash records preserve exact values/codes/evidence without asserting cause.
+- [ ] `0xC1900101 - 0x20017` produces an observed failure line plus a decoded SafeOS/Boot fact, but no inferred driver name.
+- [ ] Successful 25H2 current build produces `Upgrade Succeeded` while old/excluded records remain visible but out of scope.
+- [ ] An owned rollback marker plus a validated Windows Update attempt produces `Rolled Back` and exit `20`.
+- [ ] Several setup candidates remain independently hashed/classified; none is merged or promoted by proximity alone.
 - [ ] Missing Windows.old or cleaned Panther data becomes an explicit coverage limitation.
 
 ## Persistence and idempotency
@@ -62,12 +63,17 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 
 ## Active diagnostic safety
 
+- [ ] Raw evidence copy finishes before DISM, SFC, Appraiser, media scan, and SetupDiag start.
+- [ ] DISM ScanHealth writes to the run-owned `CurrentDiagnostics` log path.
+- [ ] SetupDiag receives only the selected WindowsBT/Rollback/Windows.old/SetupCopyLogs source and never the whole evidence root.
+- [ ] A later capture of earlier tool-generated CBS/Appraiser records remains servicing/tool context and cannot enter the upgrade timeline.
+
 - [ ] DISM uses `/ScanHealth`, never `/RestoreHealth`.
 - [ ] SFC uses `/verifyonly`, never repair mode.
 - [ ] No CHKDSK repair, cache deletion, update installation, driver removal, or safeguard bypass occurs.
 - [ ] Compatibility Appraiser timeout is bounded and recorded.
 - [ ] SetupDiag download rejects an invalid or non-Microsoft Authenticode signer.
-- [ ] SetupDiag invocation contains `/NoTel` and targets the copied snapshot.
+- [ ] SetupDiag invocation contains `/NoTel` and targets only the selected copied upgrade-style source.
 - [ ] Media validation rejects mismatched target family/architecture and missing EULA acceptance.
 - [ ] Setup invocation contains `/compat scanonly` and no install continuation path.
 - [ ] Setup compatibility scan explicitly disables Dynamic Update.
@@ -76,8 +82,8 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 
 ## Degraded operation
 
-- [ ] `-NoInternet` performs local analysis without public calls.
-- [ ] Missing or stale SetupDiag is reported without preventing local rule analysis.
+- [ ] `-NoInternet` performs local fact processing without public calls.
+- [ ] Missing or stale SetupDiag is reported without preventing fact/report generation.
 - [ ] Locked logs, disabled channels, and access denial are recorded as gaps.
 - [ ] Insufficient ProgramData or output capacity produces a materially incomplete report where appropriate.
 - [ ] Timed-out DISM, SFC, Appraiser, WU conversion, SetupDiag, and media scan terminate cleanly.
@@ -88,17 +94,22 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 
 ## Output contract and report QA
 
-- [ ] All nine final artifacts exist and are nonempty when applicable.
+- [ ] `ReviewBundle.zip` reopens and contains all required JSONL/CSV, scope, coverage, excerpt, prompt, and hash-manifest files.
+- [ ] The fact-only HTML contains no primary-cause ranking, confidence label, or executable recommendation.
+- [ ] `Findings.csv` is header-only and `Facts.csv` contains the v1.1 records.
+- [ ] Every fact evidence locator resolves to an indexed source or an explicitly recorded external/original source path.
+
+- [ ] All v1.1 final artifacts exist and are nonempty when applicable.
 - [ ] `Evidence.zip` reopens and all archived hashes match the manifest.
 - [ ] `Checksums.sha256` validates after local and UNC copies.
-- [ ] Every finding has an existing evidence reference or a documented normalized inventory record.
-- [ ] `Summary.json` reports numeric schema `1` and semantic schema `1.0.0`, and round-trips through the fleet ingestion parser.
+- [ ] Every fact has an indexed evidence reference or an explicitly documented original-source locator.
+- [ ] `Summary.json` reports numeric schema `1` and semantic schema `1.1.0`, and round-trips through the fleet ingestion parser.
 - [ ] CSV opens in Excel without formula execution from collected values.
 - [ ] HTML contains no remote asset requests and satisfies its CSP.
 - [ ] Collected HTML/script-like text is escaped and cannot execute.
-- [ ] Search, sort, severity/category/status filters, collapsible excerpts, anchors, and copy controls work by keyboard.
+- [ ] Search, sort, fact-type/category/scope filters, collapsible excerpts, and controls work by keyboard.
 - [ ] Dark/light modes, high contrast, zoom to 200%, mobile width, and print/PDF layout remain readable.
-- [ ] Outcome and severity remain understandable without color.
+- [ ] Outcome, fact type, inclusion, and exclusion remain understandable without color.
 - [ ] A report with thousands of evidence entries remains usable.
 - [ ] Timestamps remain ordered through a DST transition and retain UTC values.
 
@@ -106,9 +117,9 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 
 - [ ] No unexpected state mutation is observed across the full matrix.
 - [ ] No credential or prohibited secret collection is found in sampled outputs.
-- [ ] All explicit SetupDiag/compatibility blockers are ranked above generic free-text rules.
-- [ ] False positives are documented as regression fixtures before rule adjustment.
-- [ ] Known-good devices do not receive an active blocker from historical/nonfatal noise.
-- [ ] Known-failed devices identify the expected terminal phase and at least one actionable evidence chain.
-- [ ] Help desk and engineering reviewers can reproduce a finding from the report's source reference.
+- [ ] Explicit source-reported records remain distinct from observed free text and computed scope gates.
+- [ ] False inclusions/exclusions are documented as regression fixtures before gate adjustment.
+- [ ] Known-good and freshly imaged devices receive no causal or readiness claims.
+- [ ] Known-failed devices preserve the expected source-reported terminal code/phase and exact evidence chain.
+- [ ] Help desk and engineering reviewers can reproduce every fact from its source reference.
 - [ ] A 25–50 device ring completes before general technician deployment.

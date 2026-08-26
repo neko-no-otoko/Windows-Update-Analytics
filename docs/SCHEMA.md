@@ -2,118 +2,120 @@
 
 ## Versioning policy
 
-The initial output schema has numeric compatibility version `1` and semantic version `1.0.0`. The tool version, target map, rule catalog, and output schema are independently represented so fleet ingestion can reject unsupported breaking changes while accepting compatible rule updates.
-
-- Patch: corrections that do not remove or reinterpret fields
-- Minor: additive fields or enum values
-- Major: removed fields, incompatible type changes, or changed semantic meaning
-
-Consumers should ignore unknown properties and preserve `null` as distinct from an empty value or a zero count.
+The fleet schema keeps numeric compatibility version `1` and advances its additive semantic version to `1.1.0`. Consumers should ignore unknown properties and preserve `null` as distinct from empty or zero. The tool, target map, legacy rule catalog, and output schema are versioned independently.
 
 ## Summary.json
 
-`Summary.json` is the stable fleet-ingestion contract. Top-level content includes:
+`Summary.json` remains the stable fleet-ingestion contract. Its machine-readable draft 2020-12 schema is `Data/Summary.schema.json`.
 
-The machine-readable draft 2020-12 contract is distributed as `Data/Summary.schema.json`. Consumers should pin the schema `$id` they support and still ignore unknown additive properties.
+Core v1.1 properties are:
 
 | Property | Meaning |
 |---|---|
-| `SchemaVersion` | Numeric major compatibility version (`1`). |
-| `SchemaSemanticVersion` | Full semantic contract version (`1.0.0`). |
-| `ToolVersion` | Win11UpgradeDiag engine version. |
-| `RuleCatalogVersion` | Rule data version. |
-| `TargetMapVersion` | Target metadata version. |
-| `Run` | Run ID, mode/phase, timestamps, and computer identity. |
-| `Device` | Manufacturer, model, serial, architecture, and normalized OS identity. |
-| `SourceOs` | Baseline/source display version and build where available. |
-| `CurrentOs` | OS identity at the time the finalized report was captured. |
-| `TargetOs` | Requested display version and expected build family. |
-| `Outcome` | Current normalized outcome. |
-| `ExitCode` | Fleet-friendly integer result. |
-| `PrimaryFinding` | Highest-ranked active causal finding or `null`. |
-| `Findings` | Complete normalized findings, including historical entries. |
-| `FindingCounts` | Counts by severity/status. |
-| `CollectionCoverage` | Collector completion, errors, skips, timeouts, and completeness. |
-| `CollectionGaps` | Missing, inaccessible, skipped, expired, or timed-out evidence and diagnostics. |
-| `Attempts` | Segmented setup-attempt inventory. |
-| `ArtifactHashes` | Final artifact name, size, and SHA-256. |
-| `Persistence` | Cross-reboot state and deferred-copy status where applicable. |
-| `Timestamps` | Start, completion, and relevant attempt times in ISO 8601. |
+| `AnalysisMode` | `FactOnly` for the v1.1 default engine. |
+| `Device`, `SourceOs`, `CurrentOs`, `TargetOs` | Normalized device and Windows identities. |
+| `Outcome` | Directly observable current outcome; `Unknown` when the evidence does not establish one. |
+| `Facts`, `FactCounts` | Direct records and rollups by fact type and scope. |
+| `Attempts`, `AttemptScope` | Setup candidates, exact gates, classifications, and validated/excluded counts. |
+| `ExcludedEvidence` | Candidate evidence prevented from entering upgrade conclusions and the exact reason. |
+| `CollectionCoverage`, `CollectionGaps` | Collector state and known limitations. |
+| `ArtifactHashes`, `ReviewBundle` | Output metadata and compact-review-package hash. |
+| `PrimaryFinding`, `Findings`, `FindingCounts` | Compatibility fields retained for 1.x consumers. They are `null`/empty/zero in fact-only mode. |
 
-Valid outcomes are:
+Valid outcomes remain `Ready`, `Attention Required`, `Blocked`, `Upgrade Succeeded`, `Rolled Back`, `Failed`, and `Unknown`. Fact-only mode normally emits only the latter four outcome states that can be established from current build, an owned rollback marker, or source-reported Windows Update history.
+
+## Fact object
+
+| Property | Meaning |
+|---|---|
+| `FactId` | Run-unique sequential identifier. |
+| `FactType` | `Observed`, `SourceReported`, `Decoded`, or `Computed`. |
+| `Category` | Identity, attempt scope, Setup, Windows Update history, code, coverage, or collector execution. |
+| `Statement` | Neutral statement of record. |
+| `Value` | Scalar or structured source value. |
+| `TimestampUtc` | Source timestamp when available. |
+| `AttemptId` | Validated setup candidate identifier when directly attached. |
+| `Code`, `Phase`, `Operation` | Source code and deterministic Setup decode, when available. |
+| `ScopeStatus` | `Included`, `ContextOnly`, or `Excluded`. |
+| `EvidenceRef` | Archive-relative path plus line, array index, event ID, or JSON property locator. |
+| `Excerpt`, `ExcerptFile` | Bounded source text and its file inside `ReviewBundle.zip`. |
+
+The types have deliberately narrow meaning:
+
+- `Observed`: directly read by the collector.
+- `SourceReported`: emitted by Windows Update, Windows Setup, or scoped SetupDiag.
+- `Decoded`: deterministic numeric/symbolic or phase/operation lookup.
+- `Computed`: transparent diff or Boolean scope gate; never a root-cause assertion.
+
+## Attempt object
+
+Every `setupact*.log` candidate is inventoried. Important fields include source path/hash, time window, source/target build, parsed codes, content signals, corroborating evidence, classification, and `IncludedForUpgradeReview`.
+
+The `Gates` object exposes every Boolean decision:
 
 ```text
-Ready
-Attention Required
-Blocked
-Upgrade Succeeded
-Rolled Back
-Failed
-Unknown
+UniqueEvidence
+NotDiagnosticScan
+NotToolGenerated
+NotInitialDeploymentOrImaging
+FeatureUpgradeSemantics
+WindowsUpdateOwnership
+TemporalOverlap
+TargetVersionOrBuild
+CompletedWindowsImageState
 ```
 
-## Finding object
+Only an attempt for which every gate is true receives `WindowsUpdateFeatureUpgrade`. Other classifications are `NonWindowsUpdateFeatureUpgrade`, `DiagnosticCompatibilityScan`, `CurrentHealthDiagnostic`, `GeneralWindowsServicing`, `InitialDeploymentOrImaging`, `UnclassifiedSetupEvidence`, and `ToolGenerated`.
 
-Every finding contains enough information to resolve its evidence without relying on prose order:
+## ReviewBundle.zip
 
-| Property | Meaning |
-|---|---|
-| `FindingId` | Run-unique stable identifier. |
-| `RuleId` | Versioned catalog rule or analyzer identifier. |
-| `Title` | Concise display title. |
-| `Severity` | `Blocker`, `Error`, `Warning`, or `Information`. |
-| `Confidence` | `High`, `Medium`, or `Low`. |
-| `Status` | Normally `Active` or `Historical`. |
-| `Category` | Compatibility, setup, driver, servicing, storage, policy, and related grouping. |
-| `Phase` | Normalized setup phase when known. |
-| `Operation` | Normalized setup operation when known. |
-| `Codes` | Canonical HRESULT/Win32/NTSTATUS/MoSetup codes. |
-| `AffectedEntity` | Application, driver, device, file, package, policy, or endpoint. |
-| `Summary` | Deterministic interpretation. |
-| `WhyItMatters` | Impact explanation. |
-| `Evidence` | One or more exact evidence references. |
-| `Recommendation` | Copyable explanatory next step; never executable. |
-| `MicrosoftReferences` | Relevant Microsoft documentation URLs. |
+The provider-neutral review bundle contains:
 
-Evidence references identify source path, timestamp, line/event/record when available, code, and a bounded excerpt. A causal finding must have at least one resolvable evidence reference. Findings based only on temporal proximity are limited to low confidence.
+```text
+READ_ME_FIRST.md
+REVIEW_PROMPT.md
+Case.json
+Attempts.json
+Facts.jsonl
+Facts.csv
+Timeline.jsonl
+Timeline.csv
+UpdateHistory.jsonl
+Inventory.json
+InventoryDiff.json
+CollectionCoverage.json
+ExcludedEvidence.json
+EvidenceIndex.jsonl
+Excerpts/FACT-*.txt
+Manifest.sha256
+```
 
-## Inventory.json
+`ReviewBundle.zip` intentionally contains bounded excerpts and normalized records rather than duplicating all raw logs. Use `Evidence.zip` when the reviewer needs complete source content. Both artifacts remain local unless the operator explicitly copies or uploads them.
 
-`Inventory.json` contains normalized collector output and provenance. It is intentionally broader and less stable than `Summary.json`; ingestion systems should use it only when they understand the named collector schema. Typical branches include identity, hardware, storage, software, packages/features/languages, drivers/devices, management/policy, update history, servicing, connectivity, events, diagnostics, pre/post diff, and collector records.
+## Timeline.csv and Timeline.jsonl
 
-Collector records provide name, phase, start/end, duration, status, timeout/error text, and generated evidence. Status values can include completed, warning, failed, skipped, unavailable, and timed out.
+The fact-only timeline contains only:
+
+```text
+TimestampUtc, AttemptId, FactId, EventType, Code, Phase, Operation,
+Message, EvidenceReference
+```
+
+Setup rows must originate in a validated Windows Update attempt. Windows Update history rows are retained as source-reported context and are not attached to a setup attempt merely because their timestamps are nearby.
 
 ## Findings.csv
 
-Each row represents one finding. Array-valued codes, evidence, and references are flattened using a consistent delimiter and excerpts are bounded. CSV is intended for technician triage; use `Summary.json` when lossless types and nested evidence matter.
+The file is retained for compatibility with v1.0 workflows. It contains only its header in fact-only mode. Consumers should migrate to `Facts.csv` or `ReviewBundle.zip/Facts.jsonl`.
 
-## Timeline.csv
+## Inventory and integrity
 
-Each row is a normalized event ordered by UTC time where time is available:
-
-```text
-TimestampUtc, LocalOffset, TimestampAmbiguous, AttemptId, Phase, Operation,
-Code, Component, Event, Message, Severity, SourceRef, EvidenceReference,
-Entity, CorrelationId
-```
-
-Rows without a trustworthy timestamp remain represented and sort after timestamped records. Displayed local time is derived from the source and captured time-zone context; ingestion should prefer UTC.
-
-## Manifest.json and Checksums.sha256
-
-`Manifest.json` indexes raw evidence and finalized artifacts with staged paths, archive-relative paths, size, timestamps, and SHA-256 where readable. Its `SourceMappings` branch maps original evidence sources to archive prefixes and collection state; `CollectionGaps` records sources that were missing, inaccessible, timed out, or intentionally metadata-only. `Checksums.sha256` provides conventional hashes for validating the finalized output set after transfer.
-
-`Summary.json` lists hashes for the nonrecursive core artifacts that exist before the summary and report are written. Use `Manifest.json` and `Checksums.sha256` for the finalized output set, because a document cannot safely contain its own final hash.
-
-The manifest can represent missing, locked, cleaned, oversized, metadata-only, or copy-failed evidence. Absence from `Evidence.zip` must not be interpreted as proof that the source never existed.
+`Inventory.json` contains baseline/current normalized snapshots and a transparent section-level diff. `Manifest.json` indexes raw evidence and finalized artifacts with paths, sizes, timestamps, SHA-256, source mappings, gaps, and archive verification. `Checksums.sha256` hashes the finalized top-level artifacts. The review bundle has its own internal `Manifest.sha256`.
 
 ## Exit precedence
 
-Exit-code selection uses this precedence:
+1. Materially incomplete report: `30`.
+2. Validated rollback or source-reported failed Windows Update attempt: `20`.
+3. Direct attention state reserved for supported future checks: `10`.
+4. Complete fact report without a failed/rollback outcome: `0`.
 
-1. Materially incomplete output: `30`
-2. Active blocker, failed attempt, or rollback: `20`
-3. Active warning requiring attention: `10`
-4. Complete ready/success result: `0`
-
-Fatal startup/report failure (`40`) and unsupported platform/privilege (`50`) occur outside normal report classification. Historical findings do not drive exit status.
+`0` is not a guarantee that an upgrade is ready or will succeed. Fatal startup/report failure (`40`) and unsupported platform/privilege (`50`) occur outside normal report classification.

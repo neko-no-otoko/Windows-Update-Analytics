@@ -28,7 +28,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$toolVersion = '1.0.0'
+$toolVersion = '1.1.0'
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $context = $null
 $armedState = $null
@@ -65,6 +65,7 @@ try {
     Import-Module (Join-Path $toolRoot 'Modules\Common.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $toolRoot 'Modules\Collectors.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $toolRoot 'Modules\Analysis.psm1') -Force -ErrorAction Stop
+    Import-Module (Join-Path $toolRoot 'Modules\Review.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $toolRoot 'Modules\Report.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $toolRoot 'Modules\Persistence.psm1') -Force -ErrorAction Stop
 }
@@ -233,7 +234,7 @@ try {
     catch { }
 
     Invoke-WudAllCollectors -Context $context
-    $null = Invoke-WudAnalysis -Context $context
+    $null = Invoke-WudFactAnalysis -Context $context
 
     if ($Mode -eq 'Preflight') {
         $armedState = Install-WudPersistence -Context $context
@@ -254,6 +255,7 @@ try {
         $resumeFinalStatus = if ($context.Outcome -eq 'Upgrade Succeeded') { 'CompletedSuccess' } elseif ($context.Outcome -eq 'Rolled Back') { 'CompletedRollback' } else { 'CompletedForensic' }
     }
 
+    $null = Export-WudReviewBundle -Context $context
     $reportPath = Export-WudReportArtifacts -Context $context
     if ($Mode -eq 'Resume') {
         $deferCopy = -not [string]::IsNullOrWhiteSpace($context.CopyTo) -and (-not $context.LastCopyResult -or -not $context.LastCopyResult.Succeeded)
@@ -276,15 +278,16 @@ try {
 }
 catch {
     $message = $_.Exception.Message
+    $detail = try { Get-WudErrorDetail -ErrorRecord $_ } catch { ($_ | Out-String) }
     if ($context) {
         $context.CollectionComplete = $false
-        try { Write-WudLog -Context $context -Level ERROR -Message "Fatal tool failure: $message" } catch { }
+        try { Write-WudLog -Context $context -Level ERROR -Message ("Fatal tool failure: {0}" -f $detail) } catch { }
         if ($armedState) {
             try { $null = Remove-WudPersistence -Context $context -State $armedState -FinalStatus 'ToolFailureDisarmed' } catch { }
         }
         try {
             $failurePath = Join-Path $context.OutputPath 'Failure.txt'
-            Write-WudText -Path $failurePath -Text ("Win11UpgradeDiag encountered a fatal tool failure.`r`n`r`n$message`r`n`r`n$($_ | Out-String)")
+            Write-WudText -Path $failurePath -Text ("Win11UpgradeDiag encountered a fatal tool failure.`r`n`r`n$detail`r`n`r`n$($_ | Out-String)")
         }
         catch { }
     }

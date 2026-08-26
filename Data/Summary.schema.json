@@ -1,13 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:win11upgradediag:summary:1.0.0",
-  "title": "Win11UpgradeDiag Summary",
-  "description": "Stable fleet-ingestion contract for a finalized Win11UpgradeDiag run.",
+  "$id": "urn:win11upgradediag:summary:1.1.0",
+  "title": "Windows Update Analytics fact-only summary",
+  "description": "Stable fleet-ingestion contract for a finalized Win11UpgradeDiag v1.1 run.",
   "type": "object",
   "required": [
     "SchemaVersion",
     "SchemaSemanticVersion",
     "ToolVersion",
+    "AnalysisMode",
     "RuleCatalogVersion",
     "TargetMapVersion",
     "RunId",
@@ -23,17 +24,23 @@
     "PrimaryFinding",
     "Findings",
     "FindingCounts",
+    "Facts",
+    "FactCounts",
     "Attempts",
+    "AttemptScope",
+    "ExcludedEvidence",
     "CollectionCoverage",
     "CollectionGaps",
     "CollectionComplete",
     "ArtifactHashes",
-    "Persistence"
+    "Persistence",
+    "ReviewBundle"
   ],
   "properties": {
     "SchemaVersion": { "const": 1 },
-    "SchemaSemanticVersion": { "const": "1.0.0" },
+    "SchemaSemanticVersion": { "const": "1.1.0" },
     "ToolVersion": { "type": "string", "minLength": 1 },
+    "AnalysisMode": { "enum": ["FactOnly", "DeterministicLegacy"] },
     "RuleCatalogVersion": { "type": "string", "minLength": 1 },
     "TargetMapVersion": { "type": "string", "minLength": 1 },
     "RunId": { "type": "string", "minLength": 1 },
@@ -93,12 +100,17 @@
     },
     "Findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
     "FindingCounts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "Facts": { "type": "array", "items": { "$ref": "#/$defs/fact" } },
+    "FactCounts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
     "Attempts": { "type": "array", "items": { "type": "object" } },
+    "AttemptScope": { "type": "object", "additionalProperties": true },
+    "ExcludedEvidence": { "type": "array", "items": { "type": "object" } },
     "CollectionCoverage": { "type": "array", "items": { "$ref": "#/$defs/collectorRecord" } },
     "CollectionGaps": { "type": "array", "items": { "$ref": "#/$defs/collectionGap" } },
     "CollectionComplete": { "type": "boolean" },
     "ArtifactHashes": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
-    "Persistence": { "type": ["object", "null"] }
+    "Persistence": { "type": ["object", "null"] },
+    "ReviewBundle": { "type": ["object", "null"] }
   },
   "additionalProperties": true,
   "$defs": {
@@ -146,6 +158,26 @@
         "AffectedEntity": { "$ref": "#/$defs/nullableString" },
         "Evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } },
         "MicrosoftReferences": { "type": "array", "items": { "type": "string", "format": "uri" } }
+      },
+      "additionalProperties": true
+    },
+    "fact": {
+      "type": "object",
+      "required": ["FactId", "FactType", "Category", "Statement", "ScopeStatus", "EvidenceRef"],
+      "properties": {
+        "FactId": { "type": "string", "pattern": "^FACT-[0-9]{6}$" },
+        "FactType": { "enum": ["Observed", "SourceReported", "Decoded", "Computed"] },
+        "Category": { "type": "string", "minLength": 1 },
+        "Statement": { "type": "string", "minLength": 1 },
+        "TimestampUtc": { "$ref": "#/$defs/nullableTimestamp" },
+        "AttemptId": { "$ref": "#/$defs/nullableString" },
+        "Code": { "$ref": "#/$defs/nullableString" },
+        "Phase": { "$ref": "#/$defs/nullableString" },
+        "Operation": { "$ref": "#/$defs/nullableString" },
+        "ScopeStatus": { "enum": ["Included", "ContextOnly", "Excluded"] },
+        "EvidenceRef": { "$ref": "#/$defs/nullableString" },
+        "Excerpt": { "$ref": "#/$defs/nullableString" },
+        "ExcerptFile": { "$ref": "#/$defs/nullableString" }
       },
       "additionalProperties": true
     },

@@ -69,6 +69,41 @@ function Write-WudText {
     [IO.File]::WriteAllText($Path, $Text, $encoder)
 }
 
+function Get-WudObjectPropertyValue {
+    <#
+        Read an optional property without triggering Set-StrictMode when Windows,
+        a COM provider, CIM, or a registry record returns a sparse object.
+    #>
+    param(
+        $InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+    if ($null -eq $InputObject) { return $Default }
+    if ($InputObject -is [Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) { return $InputObject[$Name] }
+        return $Default
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($property) {
+        try { return $property.Value }
+        catch { return $Default }
+    }
+    return $Default
+}
+
+function Get-WudErrorDetail {
+    param($ErrorRecord)
+    if ($null -eq $ErrorRecord) { return 'Unknown error.' }
+    $message = if ($ErrorRecord.Exception) { [string]$ErrorRecord.Exception.Message } else { [string]$ErrorRecord }
+    $location = $null
+    if ($ErrorRecord.PSObject.Properties['InvocationInfo'] -and $ErrorRecord.InvocationInfo) {
+        $location = [string]$ErrorRecord.InvocationInfo.PositionMessage
+    }
+    $stack = if ($ErrorRecord.PSObject.Properties['ScriptStackTrace']) { [string]$ErrorRecord.ScriptStackTrace } else { $null }
+    return (@($message, $location, $stack) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join [Environment]::NewLine
+}
+
 function Get-WudTargetDefinition {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
@@ -133,11 +168,15 @@ function New-WudRunContext {
         ProcessRecords     = New-Object Collections.ArrayList
         CollectionGaps     = New-Object Collections.ArrayList
         Findings           = New-Object Collections.ArrayList
+        Facts              = New-Object Collections.ArrayList
         Timeline           = New-Object Collections.ArrayList
         Inventory          = [ordered]@{}
         Attempts           = New-Object Collections.ArrayList
+        ExcludedEvidence   = New-Object Collections.ArrayList
         CollectionComplete = $true
         LastCopyResult     = $null
+        ReviewData         = $null
+        ReviewBundle       = $null
         Outcome            = 'Unknown'
         PrimaryFinding     = $null
         ExitCode           = 0
@@ -232,11 +271,14 @@ function Invoke-WudProcess {
     try {
         $parameters = @{
             FilePath               = $FilePath
-            ArgumentList           = $argumentLine
             PassThru               = $true
             RedirectStandardOutput = $stdoutPath
             RedirectStandardError  = $stderrPath
         }
+        # Windows PowerShell 5.1 rejects Start-Process -ArgumentList '' even
+        # though no arguments is valid for commands such as systeminfo and
+        # mountvol. Do not bind the parameter for an empty argument array.
+        if (@($ArgumentList).Count -gt 0) { $parameters.ArgumentList = $argumentLine }
         if ($WorkingDirectory) { $parameters.WorkingDirectory = $WorkingDirectory }
         $process = Start-Process @parameters
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -300,7 +342,7 @@ function Invoke-WudCollector {
     }
     catch {
         $status = 'Failed'
-        $detail = $_.Exception.Message
+        $detail = Get-WudErrorDetail -ErrorRecord $_
         if ($Required) { $Context.CollectionComplete = $false }
         Write-WudLog -Context $Context -Level WARN -Message ("Collector {0} failed: {1}" -f $Id, $detail)
     }
@@ -316,7 +358,9 @@ function Invoke-WudCollector {
         }
         elseif (@($unsuccessful).Count -gt 0) {
             $status = 'CompletedWithWarnings'
-            $detail = 'Non-success process result: ' + (@($unsuccessful | ForEach-Object { '{0} ({1})' -f $_.Name, $_.ExitCodeHex }) -join ', ')
+            $detail = 'Non-success process result: ' + (@($unsuccessful | ForEach-Object {
+                '{0} ({1})' -f (Get-WudObjectPropertyValue $_ 'Name' '<unnamed-process>'), (Get-WudObjectPropertyValue $_ 'ExitCodeHex' '<no-exit-code>')
+            }) -join ', ')
         }
     }
     $ended = [DateTime]::UtcNow
@@ -472,5 +516,6 @@ Export-ModuleMember -Function @(
     'New-WudRunContext', 'Write-WudLog', 'Invoke-WudProcess', 'Invoke-WudCollector', 'Add-WudFinding',
     'Add-WudTimelineEvent', 'Get-WudRelativePath', 'Get-WudFileHashSafe', 'Get-WudFileInventory',
     'Export-WudRegistryTree', 'ConvertTo-WudByteSize', 'Get-WudSeverityRank', 'Get-WudConfidenceRank',
-    'Resolve-WudExitCode', 'ConvertTo-WudCommandLineArgument', 'ConvertTo-WudCsvCell', 'Add-WudCollectionGap'
+    'Resolve-WudExitCode', 'ConvertTo-WudCommandLineArgument', 'ConvertTo-WudCsvCell', 'Add-WudCollectionGap',
+    'Get-WudObjectPropertyValue', 'Get-WudErrorDetail'
 )

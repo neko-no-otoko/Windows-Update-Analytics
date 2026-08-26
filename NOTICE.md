@@ -4,4 +4,4 @@ Win11UpgradeDiag does not redistribute SetupDiag. When internet use is enabled, 
 
 Windows, PowerShell, SetupDiag, Microsoft Intune, Configuration Manager, and related product names are trademarks of Microsoft Corporation. This diagnostic bundle is not a Microsoft product.
 
-The links in the report and documentation point to Microsoft guidance but do not make Microsoft responsible for the tool's custom collection or analysis rules.
+The links in the report and documentation point to Microsoft guidance but do not make Microsoft responsible for the tool's custom collection, parsing, or evidence-scope logic.

@@ -33,7 +33,10 @@ try {
     }
     $software = [pscustomobject]@{ Applications = @([pscustomobject]@{ DisplayName = 'Contoso Legacy Filter'; DisplayVersion = '1.0' }) }
     $drivers = [pscustomobject]@{
-        Devices = @([pscustomobject]@{ Name = 'Contoso Filter'; DeviceID = 'ROOT\CONTOSO'; ConfigManagerErrorCode = 0 })
+        Devices = @(
+            [pscustomobject]@{ Name = 'Contoso Filter'; DeviceID = 'ROOT\CONTOSO'; ConfigManagerErrorCode = 0 },
+            [pscustomobject]@{ DeviceID = 'ROOT\SPARSE'; ConfigManagerErrorCode = 28 }
+        )
         SignedDrivers = @([pscustomobject]@{ DeviceID = 'ROOT\CONTOSO'; DriverVersion = '1.0.0.0' })
     }
     $servicing = [pscustomobject]@{ PendingReboot = [pscustomobject]@{ IsPending = $true }; UpdateHistory = @(); HotFixes = @() }
@@ -52,6 +55,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $toolRoot 'Tests/Fixtures/SetupDiagResults.json') -Destination (Join-Path $setupDiag 'SetupDiagResults.json')
     $servicingPath = New-WudDirectory -Path (Join-Path $context.SnapshotPath 'Servicing')
     Write-WudJsonAtomic -Path (Join-Path $servicingPath 'servicing.json') -InputObject $servicing
+    $inventoryPath = New-WudDirectory -Path (Join-Path $context.SnapshotPath 'Inventory')
+    Write-WudJsonAtomic -Path (Join-Path $inventoryPath 'drivers.json') -InputObject $drivers
     Write-WudJsonAtomic -Path (Join-Path $context.SnapshotPath 'raw-copy-results.json') -InputObject ([pscustomobject]@{
         Sources = @([pscustomobject]@{ Source = 'C:\$WINDOWS.~BT\Sources\Rollback'; Destination = 'WindowsBT-Rollback'; Present = $true; Copied = $true })
         MemoryDump = $null
@@ -76,6 +81,7 @@ try {
     Assert-Wud (@($appFinding.Codes) -contains '0xC1900208') 'Normalized finding code collection'
     Assert-Wud (@($analysis.Findings | Where-Object RuleId -eq 'WUD-DRIVER-ROLLBACK').Count -eq 1) 'Driver rollback rule'
     Assert-Wud (@($analysis.Findings | Where-Object RuleId -eq 'WUD-PENDING-REBOOT').Count -eq 1) 'Inventory finding evidence chain'
+    Assert-Wud (@($analysis.Findings | Where-Object RuleId -eq 'WUD-PROBLEM-DEVICES').Count -eq 1) 'Sparse PnP record does not fail missing Name access'
     $pendingFinding = @($analysis.Findings | Where-Object RuleId -eq 'WUD-PENDING-REBOOT')[0]
     Assert-Wud ($pendingFinding.InstanceKey -eq 'pending-reboot') 'Custom finding positional contract'
     Assert-Wud ($pendingFinding.Recommendation -match 'servicing|restart') 'Custom finding recommendation contract'
@@ -111,7 +117,7 @@ try {
     Assert-Wud ($summary.SchemaVersion -eq 1) 'Fleet summary schema version'
     Assert-Wud ($summary.Device.ComputerName -eq 'LAB-PC-01') 'Fleet summary device identity'
     Assert-Wud ($summary.Outcome -eq 'Blocked') 'Fleet summary outcome'
-    Assert-Wud ($summary.RuleCatalogVersion -eq '1.0.0') 'Fleet summary rule catalog version'
+    Assert-Wud ($summary.RuleCatalogVersion -eq '1.1.0') 'Fleet summary rule catalog version'
     Assert-Wud (@($summary.CollectionCoverage).Count -gt 0) 'Fleet summary collection coverage'
     Assert-Wud (@($summary.ArtifactHashes).Count -ge 5) 'Fleet summary artifact hashes'
     $manifest = Read-WudJson -Path (Join-Path $outputPath 'Manifest.json')
@@ -155,8 +161,9 @@ try {
     $currentServicing = [pscustomobject]@{ PendingReboot = [pscustomobject]@{ IsPending = $false }; UpdateHistory = @(); HotFixes = @(); Packages = @([pscustomobject]@{ PackageName = 'Package-B'; PackageState = 'Installed'; ReleaseType = 'Update'; InstallTime = '2026-08-20' }) }
     $baselineManagement = [pscustomobject]@{ InternetTestsSuppressed = $true; Connectivity = @(); NetworkAdapters = @([pscustomobject]@{ InterfaceDescription = 'Ethernet'; Name = 'Ethernet'; Status = 'Up'; MacAddress = '00-00-00-00-00-01'; LinkSpeed = '1 Gbps'; DriverVersion = '1.0' }) }
     $currentManagement = [pscustomobject]@{ InternetTestsSuppressed = $true; Connectivity = @(); NetworkAdapters = @([pscustomobject]@{ InterfaceDescription = 'Ethernet'; Name = 'Ethernet'; Status = 'Up'; MacAddress = '00-00-00-00-00-01'; LinkSpeed = '1 Gbps'; DriverVersion = '2.0' }) }
-    $baselineInventory = [pscustomobject][ordered]@{ Identity = $identity; Hardware = $hardware; Software = $baselineSoftware; Drivers = $drivers; Servicing = $baselineServicing; Management = $baselineManagement }
-    $currentInventory = [pscustomobject][ordered]@{ Identity = $successIdentity; Hardware = $hardware; Software = $currentSoftware; Drivers = $drivers; Servicing = $currentServicing; Management = $currentManagement }
+    $successDrivers = [pscustomobject]@{ Devices = @([pscustomobject]@{ Name = 'Contoso Filter'; DeviceID = 'ROOT\CONTOSO'; ConfigManagerErrorCode = 0 }); SignedDrivers = $drivers.SignedDrivers }
+    $baselineInventory = [pscustomobject][ordered]@{ Identity = $identity; Hardware = $hardware; Software = $baselineSoftware; Drivers = $successDrivers; Servicing = $baselineServicing; Management = $baselineManagement }
+    $currentInventory = [pscustomobject][ordered]@{ Identity = $successIdentity; Hardware = $hardware; Software = $currentSoftware; Drivers = $successDrivers; Servicing = $currentServicing; Management = $currentManagement }
     $baselineSnapshot = New-WudDirectory -Path (Join-Path $successContext.EvidencePath 'Preflight')
     Write-WudJsonAtomic -Path (Join-Path $baselineSnapshot 'inventory.json') -InputObject $baselineInventory -Depth 30
     Write-WudJsonAtomic -Path (Join-Path $successContext.SnapshotPath 'inventory.json') -InputObject $currentInventory -Depth 30

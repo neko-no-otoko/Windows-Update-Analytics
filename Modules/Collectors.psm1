@@ -29,20 +29,22 @@ function Get-WudInstalledApplications {
     $items = New-Object Collections.ArrayList
     foreach ($path in $paths) {
         foreach ($app in @(Get-ItemProperty -Path $path -ErrorAction SilentlyContinue)) {
-            if ([string]::IsNullOrWhiteSpace([string]$app.DisplayName)) { continue }
-            $scope = if ($app.PSPath -match 'HKEY_USERS') { 'LoadedUser' } else { 'Machine' }
-            $architecture = if ($app.PSPath -match 'WOW6432Node') { 'x86' } else { 'x64-or-neutral' }
+            $displayName = [string](Get-WudObjectPropertyValue $app 'DisplayName')
+            if ([string]::IsNullOrWhiteSpace($displayName)) { continue }
+            $registryPath = [string](Get-WudObjectPropertyValue $app 'PSPath')
+            $scope = if ($registryPath -match 'HKEY_USERS') { 'LoadedUser' } else { 'Machine' }
+            $architecture = if ($registryPath -match 'WOW6432Node') { 'x86' } else { 'x64-or-neutral' }
             $null = $items.Add([pscustomobject][ordered]@{
-                DisplayName     = $app.DisplayName
-                DisplayVersion  = $app.DisplayVersion
-                Publisher       = $app.Publisher
-                InstallDate     = $app.InstallDate
-                InstallLocation = $app.InstallLocation
-                UninstallString = $app.UninstallString
-                ProductCode     = $app.PSChildName
+                DisplayName     = $displayName
+                DisplayVersion  = Get-WudObjectPropertyValue $app 'DisplayVersion'
+                Publisher       = Get-WudObjectPropertyValue $app 'Publisher'
+                InstallDate     = Get-WudObjectPropertyValue $app 'InstallDate'
+                InstallLocation = Get-WudObjectPropertyValue $app 'InstallLocation'
+                UninstallString = Get-WudObjectPropertyValue $app 'UninstallString'
+                ProductCode     = Get-WudObjectPropertyValue $app 'PSChildName'
                 Scope           = $scope
                 Architecture    = $architecture
-                RegistryPath    = $app.PSPath
+                RegistryPath    = $registryPath
             })
         }
     }
@@ -88,34 +90,55 @@ function Invoke-WudIdentityCollector {
     try { $locale = (Get-WinSystemLocale).Name } catch { }
     $uiLanguage = $null
     try { $uiLanguage = [Globalization.CultureInfo]::InstalledUICulture.Name } catch { }
+    $imageState = $null
+    try {
+        $setupState = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State' -ErrorAction Stop
+        $imageState = Get-WudObjectPropertyValue $setupState 'ImageState'
+    }
+    catch { }
+    $systemSetupState = $null
+    try {
+        $systemSetup = Get-ItemProperty 'HKLM:\SYSTEM\Setup' -ErrorAction Stop
+        $systemSetupState = [pscustomobject][ordered]@{
+            SystemSetupInProgress = Get-WudObjectPropertyValue $systemSetup 'SystemSetupInProgress'
+            OOBEInProgress        = Get-WudObjectPropertyValue $systemSetup 'OOBEInProgress'
+            SetupType             = Get-WudObjectPropertyValue $systemSetup 'SetupType'
+            SetupPhase            = Get-WudObjectPropertyValue $systemSetup 'SetupPhase'
+            Upgrade               = Get-WudObjectPropertyValue $systemSetup 'Upgrade'
+            CmdLine               = Get-WudObjectPropertyValue $systemSetup 'CmdLine'
+        }
+    }
+    catch { }
     $identity = [pscustomobject][ordered]@{
         ComputerName        = $env:COMPUTERNAME
-        Domain              = $computer.Domain
-        Manufacturer        = $computer.Manufacturer
-        Model               = $computer.Model
-        SystemType          = $computer.SystemType
-        TotalPhysicalMemory = $computer.TotalPhysicalMemory
-        HypervisorPresent   = $computer.HypervisorPresent
-        SerialNumber        = if ($product) { $product.IdentifyingNumber } else { $null }
-        UUID                = if ($product) { $product.UUID } else { $null }
-        OsCaption           = $os.Caption
-        EditionId           = $currentVersion.EditionID
-        ProductName         = $currentVersion.ProductName
-        DisplayVersion      = $currentVersion.DisplayVersion
-        CurrentBuild        = $currentVersion.CurrentBuild
-        CurrentBuildNumber  = $os.BuildNumber
-        UBR                 = $currentVersion.UBR
-        BuildLabEx          = $currentVersion.BuildLabEx
-        InstallationType    = $currentVersion.InstallationType
-        ReleaseId           = $currentVersion.ReleaseId
-        InstallDate         = $os.InstallDate
-        LastBootUpTime      = $os.LastBootUpTime
-        OsArchitecture      = $os.OSArchitecture
+        Domain              = Get-WudObjectPropertyValue $computer 'Domain'
+        Manufacturer        = Get-WudObjectPropertyValue $computer 'Manufacturer'
+        Model               = Get-WudObjectPropertyValue $computer 'Model'
+        SystemType          = Get-WudObjectPropertyValue $computer 'SystemType'
+        TotalPhysicalMemory = Get-WudObjectPropertyValue $computer 'TotalPhysicalMemory'
+        HypervisorPresent   = Get-WudObjectPropertyValue $computer 'HypervisorPresent'
+        SerialNumber        = Get-WudObjectPropertyValue $product 'IdentifyingNumber'
+        UUID                = Get-WudObjectPropertyValue $product 'UUID'
+        OsCaption           = Get-WudObjectPropertyValue $os 'Caption'
+        EditionId           = Get-WudObjectPropertyValue $currentVersion 'EditionID'
+        ProductName         = Get-WudObjectPropertyValue $currentVersion 'ProductName'
+        DisplayVersion      = Get-WudObjectPropertyValue $currentVersion 'DisplayVersion'
+        CurrentBuild        = Get-WudObjectPropertyValue $currentVersion 'CurrentBuild'
+        CurrentBuildNumber  = Get-WudObjectPropertyValue $os 'BuildNumber'
+        UBR                 = Get-WudObjectPropertyValue $currentVersion 'UBR'
+        BuildLabEx          = Get-WudObjectPropertyValue $currentVersion 'BuildLabEx'
+        InstallationType    = Get-WudObjectPropertyValue $currentVersion 'InstallationType'
+        ReleaseId           = Get-WudObjectPropertyValue $currentVersion 'ReleaseId'
+        InstallDate         = Get-WudObjectPropertyValue $os 'InstallDate'
+        LastBootUpTime      = Get-WudObjectPropertyValue $os 'LastBootUpTime'
+        OsArchitecture      = Get-WudObjectPropertyValue $os 'OSArchitecture'
         ProcessArchitecture = $env:PROCESSOR_ARCHITECTURE
-        FirmwareVersion     = if ($bios) { $bios.SMBIOSBIOSVersion } else { $null }
+        FirmwareVersion     = Get-WudObjectPropertyValue $bios 'SMBIOSBIOSVersion'
         SystemLocale        = $locale
         SystemDefaultUiLanguage = $uiLanguage
         TimeZone            = [TimeZoneInfo]::Local.Id
+        WindowsImageState   = $imageState
+        SystemSetupState    = $systemSetupState
         CapturedUtc         = [DateTime]::UtcNow.ToString('o')
     }
     $sourceOs = New-Object Collections.ArrayList
@@ -124,12 +147,12 @@ function Invoke-WudIdentityCollector {
             $value = Get-ItemProperty -LiteralPath $key.PSPath
             $null = $sourceOs.Add([pscustomobject][ordered]@{
                 Key            = $key.PSChildName
-                ProductName    = $value.ProductName
-                ReleaseId      = $value.ReleaseId
-                DisplayVersion = $value.DisplayVersion
-                CurrentBuild   = $value.CurrentBuild
-                UBR            = $value.UBR
-                InstallDate    = $value.InstallDate
+                ProductName    = Get-WudObjectPropertyValue $value 'ProductName'
+                ReleaseId      = Get-WudObjectPropertyValue $value 'ReleaseId'
+                DisplayVersion = Get-WudObjectPropertyValue $value 'DisplayVersion'
+                CurrentBuild   = Get-WudObjectPropertyValue $value 'CurrentBuild'
+                UBR            = Get-WudObjectPropertyValue $value 'UBR'
+                InstallDate    = Get-WudObjectPropertyValue $value 'InstallDate'
             })
         }
         catch { }
@@ -402,16 +425,25 @@ function Get-WudUpdateHistory {
         $count = $searcher.GetTotalHistoryCount()
         if ($count -gt 0) {
             foreach ($entry in @($searcher.QueryHistory(0, [Math]::Min($count, 2000)))) {
+                $identity = Get-WudObjectPropertyValue $entry 'UpdateIdentity'
+                $hresult = Get-WudObjectPropertyValue $entry 'HResult'
+                $hresultHex = $null
+                if ($null -ne $hresult) { $hresultHex = '0x{0:X8}' -f ([long]$hresult -band 0xFFFFFFFFL) }
                 $null = $records.Add([pscustomobject][ordered]@{
-                    Date               = $entry.Date
-                    Title              = $entry.Title
-                    Description        = $entry.Description
-                    Operation          = [string]$entry.Operation
-                    ResultCode         = [string]$entry.ResultCode
-                    HResult            = $entry.HResult
-                    HResultHex         = '0x{0:X8}' -f ([long]$entry.HResult -band 0xFFFFFFFFL)
-                    SupportUrl         = $entry.SupportUrl
-                    UnmappedResultCode = $entry.UnmappedResultCode
+                    Date                = Get-WudObjectPropertyValue $entry 'Date'
+                    Title               = Get-WudObjectPropertyValue $entry 'Title'
+                    Description         = Get-WudObjectPropertyValue $entry 'Description'
+                    Operation           = [string](Get-WudObjectPropertyValue $entry 'Operation')
+                    ResultCode          = [string](Get-WudObjectPropertyValue $entry 'ResultCode')
+                    HResult             = $hresult
+                    HResultHex          = $hresultHex
+                    SupportUrl          = Get-WudObjectPropertyValue $entry 'SupportUrl'
+                    UnmappedResultCode  = Get-WudObjectPropertyValue $entry 'UnmappedResultCode'
+                    ClientApplicationID = Get-WudObjectPropertyValue $entry 'ClientApplicationID'
+                    ServerSelection     = [string](Get-WudObjectPropertyValue $entry 'ServerSelection')
+                    ServiceID           = Get-WudObjectPropertyValue $entry 'ServiceID'
+                    UpdateID            = Get-WudObjectPropertyValue $identity 'UpdateID'
+                    RevisionNumber      = Get-WudObjectPropertyValue $identity 'RevisionNumber'
                 })
             }
         }
@@ -440,13 +472,16 @@ function Invoke-WudActiveHealthCollector {
     param($Context)
     $dismTimeout = [int]$Context.Settings.timeoutsSeconds.dismScanHealth
     $sfcTimeout = [int]$Context.Settings.timeoutsSeconds.sfcVerifyOnly
-    $null = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Online', '/Cleanup-Image', '/ScanHealth', '/English') -Name 'dism-scanhealth' -TimeoutSeconds $dismTimeout -SuccessExitCodes @(0, 3010)
+    $diagnosticPath = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'CurrentDiagnostics')
+    $dismLog = Join-Path $diagnosticPath 'dism-scanhealth.log'
+    $null = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Online', '/Cleanup-Image', '/ScanHealth', '/English', ("/LogPath:{0}" -f $dismLog)) -Name 'dism-scanhealth' -TimeoutSeconds $dismTimeout -SuccessExitCodes @(0, 3010)
     $null = Invoke-WudProcess -Context $Context -FilePath 'sfc.exe' -ArgumentList @('/verifyonly') -Name 'sfc-verifyonly' -TimeoutSeconds $sfcTimeout -SuccessExitCodes @(0, 1)
 }
 
 function Invoke-WudAppraiserCollector {
     param($Context)
     $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Compatibility')
+    $refreshPath = New-WudDirectory -Path (Join-Path $path 'AppraiserRefresh')
     $taskPath = '\Microsoft\Windows\Application Experience\'
     $taskName = 'Microsoft Compatibility Appraiser'
     $result = [ordered]@{ TaskPath = $taskPath; TaskName = $taskName; StartedUtc = [DateTime]::UtcNow.ToString('o'); Status = 'NotFound'; TimedOut = $false; Before = $null; After = $null; Error = $null }
@@ -475,6 +510,7 @@ function Invoke-WudAppraiserCollector {
     if ($result.TimedOut) { $null = Add-WudCollectionGap -Context $Context -Collector 'appraiser' -Source "$taskPath$taskName" -Status 'TimedOut' -Detail 'The Compatibility Appraiser task exceeded its configured timeout.' }
     elseif ($result.Error) { $null = Add-WudCollectionGap -Context $Context -Collector 'appraiser' -Source "$taskPath$taskName" -Status 'Unavailable' -Detail $result.Error }
     Write-WudJsonAtomic -Path (Join-Path $path 'appraiser-task.json') -InputObject ([pscustomobject]$result)
+    $null = Export-WudRegistryTree -RegistryPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags' -OutputPath (Join-Path $refreshPath 'appcompat-flags-after-refresh.json')
 }
 
 function Invoke-WudMediaCompatibilityCollector {
@@ -867,9 +903,35 @@ function Invoke-WudSetupDiagCollector {
         Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-tool.json') -InputObject ([pscustomobject]@{ Available = $false; Reason = 'No Microsoft-signed SetupDiag executable was available.' })
         return
     }
-    Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-tool.json') -InputObject ([pscustomobject]@{ Available = $true; Tool = $tool })
+    $candidateRoots = New-Object Collections.ArrayList
+    foreach ($name in @('WindowsBT-Rollback', 'WindowsBT-Panther', 'Win11UpgradeDiag-SetupCopyLogs', 'WindowsOld-Panther')) {
+        $candidate = Join-Path (Join-Path $Context.SnapshotPath 'Raw') $name
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        $logs = @(Get-ChildItem -LiteralPath $candidate -File -Recurse -Filter 'setupact*.log' -ErrorAction SilentlyContinue)
+        if (@($logs).Count -gt 0) {
+            $newest = @($logs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)[0]
+            $null = $candidateRoots.Add([pscustomobject]@{ Path = $candidate; NewestUtc = $newest.LastWriteTimeUtc; SetupAct = $newest.FullName })
+        }
+    }
+    $selectedInput = @($candidateRoots | Sort-Object NewestUtc -Descending | Select-Object -First 1)
+    if (@($selectedInput).Count -eq 0) {
+        $null = Add-WudCollectionGap -Context $Context -Collector 'setupdiag' -Source 'Scoped feature-upgrade setup logs' -Status 'NoScopedInput' -Detail 'No setupact log was available in WindowsBT, rollback, copied setup-hook, or Windows.old upgrade locations. Windows\\Panther imaging evidence was intentionally excluded.'
+        Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-tool.json') -InputObject ([pscustomobject]@{ Available = $true; Tool = $tool; Executed = $false; Reason = 'No scoped feature-upgrade input.' })
+        return
+    }
+    $inputMetadata = [pscustomobject][ordered]@{
+        Available          = $true
+        Tool               = $tool
+        Executed           = $true
+        InputPath          = $selectedInput[0].Path
+        InputSetupAct      = $selectedInput[0].SetupAct
+        InputEvidenceRef   = Get-WudRelativePath -BasePath $Context.EvidencePath -Path $selectedInput[0].SetupAct
+        ExcludedByDesign   = @('Windows\\Panther', 'Commands', 'CurrentDiagnostics', 'Compatibility\\MediaScan')
+        ScopingNote        = 'SetupDiag input is restricted to the newest feature-upgrade-style raw source. Final Windows Update eligibility is decided separately by the fact-only scope gates.'
+    }
+    Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-tool.json') -InputObject $inputMetadata
     $output = Join-Path $path 'SetupDiagResults.json'
-    $result = Invoke-WudProcess -Context $Context -FilePath $tool.Path -ArgumentList @(("/Output:{0}" -f $output), ("/LogsPath:{0}" -f $Context.EvidencePath), '/Format:json', '/ZipLogs:False', '/NoTel', '/Verbose') -Name 'setupdiag' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.setupDiag) -SuccessExitCodes @(0, 1) -WorkingDirectory $path
+    $result = Invoke-WudProcess -Context $Context -FilePath $tool.Path -ArgumentList @(("/Output:{0}" -f $output), ("/LogsPath:{0}" -f $selectedInput[0].Path), '/Format:json', '/ZipLogs:False', '/NoTel', '/Verbose') -Name 'setupdiag' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.setupDiag) -SuccessExitCodes @(0, 1) -WorkingDirectory $path
     Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-execution.json') -InputObject $result -Depth 20
 }
 
@@ -881,12 +943,12 @@ function Invoke-WudAllCollectors {
     $null = Invoke-WudCollector $Context 'drivers' 'PnP devices, problem codes, and driver inventory' { Invoke-WudDriverCollector $Context }
     $null = Invoke-WudCollector $Context 'management' 'Update ownership, GPO, MDM, services, proxy, network, and connectivity' { Invoke-WudManagementCollector $Context }
     $null = Invoke-WudCollector $Context 'servicing' 'Update history, packages, pending reboot, and servicing state' { Invoke-WudServicingCollector $Context } $true
-    $null = Invoke-WudCollector $Context 'active-health' 'Bounded DISM ScanHealth and SFC verify-only checks' { Invoke-WudActiveHealthCollector $Context }
-    $null = Invoke-WudCollector $Context 'appraiser' 'Microsoft Compatibility Appraiser refresh' { Invoke-WudAppraiserCollector $Context }
-    $null = Invoke-WudCollector $Context 'media-compatibility' 'Optional target-media compatibility scan only' { Invoke-WudMediaCompatibilityCollector $Context }
+    $null = Invoke-WudCollector $Context 'raw-evidence' 'Passive snapshot of setup, rollback, servicing, management, crash, and transport evidence' { Invoke-WudRawEvidenceCollector $Context } $true
     $null = Invoke-WudCollector $Context 'windows-update' 'Windows Update and Delivery Optimization conversion' { Invoke-WudWindowsUpdateLogCollector $Context }
-    $null = Invoke-WudCollector $Context 'raw-evidence' 'Setup, rollback, servicing, management, crash, and transport evidence' { Invoke-WudRawEvidenceCollector $Context } $true
     $null = Invoke-WudCollector $Context 'events' 'Relevant event channels, reliability, errors, and warnings' { Invoke-WudEventCollector $Context }
+    $null = Invoke-WudCollector $Context 'active-health' 'Tool-isolated, bounded DISM ScanHealth and SFC verify-only checks' { Invoke-WudActiveHealthCollector $Context }
+    $null = Invoke-WudCollector $Context 'appraiser' 'Tool-generated Microsoft Compatibility Appraiser refresh' { Invoke-WudAppraiserCollector $Context }
+    $null = Invoke-WudCollector $Context 'media-compatibility' 'Tool-generated optional target-media compatibility scan only' { Invoke-WudMediaCompatibilityCollector $Context }
     $null = Invoke-WudCollector $Context 'setupdiag' 'Microsoft SetupDiag offline analysis with telemetry disabled' { Invoke-WudSetupDiagCollector $Context }
     $Context.Inventory['Provenance'] = [pscustomobject][ordered]@{ ProcessRecords = @($Context.ProcessRecords); CollectionGaps = @($Context.CollectionGaps) }
     Write-WudJsonAtomic -Path (Join-Path $Context.SnapshotPath 'collector-records.json') -InputObject @($Context.CollectorRecords)

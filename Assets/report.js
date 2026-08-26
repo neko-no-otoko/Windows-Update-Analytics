@@ -69,6 +69,32 @@
     if (control) control.addEventListener(control.tagName === "INPUT" ? "input" : "change", applyFilters);
   });
 
+  var factSearch = document.getElementById("fact-search");
+  var factType = document.getElementById("fact-type-filter");
+  var factScope = document.getElementById("fact-scope-filter");
+  var factCategory = document.getElementById("fact-category-filter");
+  var factRows = Array.prototype.slice.call(document.querySelectorAll("#fact-table tbody tr"));
+  var factCards = Array.prototype.slice.call(document.querySelectorAll(".fact-card"));
+
+  function applyFactFilters() {
+    var query = factSearch ? factSearch.value.toLowerCase().trim() : "";
+    var type = factType ? factType.value.toLowerCase() : "";
+    var scope = factScope ? factScope.value.toLowerCase() : "";
+    var cat = factCategory ? factCategory.value.toLowerCase() : "";
+    function visible(node) {
+      var text = (node.textContent || "").toLowerCase();
+      return (!query || text.indexOf(query) >= 0) &&
+        (!type || (node.dataset.factType || "") === type) &&
+        (!scope || (node.dataset.factScope || "") === scope) &&
+        (!cat || (node.dataset.factCategory || "") === cat);
+    }
+    factRows.forEach(function (row) { row.classList.toggle("hidden", !visible(row)); });
+    factCards.forEach(function (card) { card.classList.toggle("hidden", !visible(card)); });
+  }
+  [factSearch, factType, factScope, factCategory].forEach(function (control) {
+    if (control) control.addEventListener(control.tagName === "INPUT" ? "input" : "change", applyFactFilters);
+  });
+
   Array.prototype.forEach.call(document.querySelectorAll("th[data-sort]"), function (header) {
     header.tabIndex = 0;
     header.setAttribute("role", "button");

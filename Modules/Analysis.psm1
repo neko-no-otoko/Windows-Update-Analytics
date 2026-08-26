@@ -469,7 +469,7 @@ function Add-WudInventoryFindings {
             Add-WudCustomFinding $Context 'WUD-TPM-NOT-PRESENT' 'Hardware' 'Warning' 'High' 'TPM 2.0 readiness could not be confirmed' 'The local TPM provider reports no present TPM. Treat this as a risk signal unless Setup compatibility evidence produces a system-requirements block.' 'Inventory\hardware.json' 'TpmPresent=False' @('https://learn.microsoft.com/windows/whats-new/windows-11-requirements') 'tpm'
         }
         $tpmWmiValues = if ($hardware.PSObject.Properties['TpmWmi']) { @($hardware.TpmWmi) } else { @() }
-        $tpmSpec = @($tpmWmiValues | Where-Object { $_.SpecVersion } | Select-Object -First 1)
+        $tpmSpec = @($tpmWmiValues | Where-Object { Get-WudObjectPropertyValue $_ 'SpecVersion' } | Select-Object -First 1)
         if (@($tpmSpec).Count -gt 0 -and [string]$tpmSpec[0].SpecVersion -notmatch '(^|,\s*)2\.0(?:,|$)') {
             Add-WudCustomFinding $Context 'WUD-TPM-VERSION' 'Hardware' 'Warning' 'High' 'TPM 2.0 was not reported' ("The firmware TPM provider reports specification versions '{0}', without TPM 2.0." -f $tpmSpec[0].SpecVersion) 'Inventory\hardware.json' ("SpecVersion=$($tpmSpec[0].SpecVersion)") @('https://learn.microsoft.com/windows/whats-new/windows-11-requirements') 'tpm-version'
         }
@@ -486,9 +486,12 @@ function Add-WudInventoryFindings {
     }
     $drivers = $Context.Inventory['Drivers']
     if ($drivers) {
-        $problemDevices = @($drivers.Devices | Where-Object { $null -ne $_.ConfigManagerErrorCode -and [int]$_.ConfigManagerErrorCode -ne 0 })
+        $problemDevices = @($drivers.Devices | Where-Object {
+            $problemCode = Get-WudObjectPropertyValue $_ 'ConfigManagerErrorCode'
+            $null -ne $problemCode -and [int]$problemCode -ne 0
+        })
         if (@($problemDevices).Count -gt 0) {
-            Add-WudCustomFinding $Context 'WUD-PROBLEM-DEVICES' 'Drivers' 'Warning' 'High' 'PnP devices have active problem codes' ("{0} devices report a nonzero ConfigManager error code. They are risk signals, not proven upgrade causes without matching Setup evidence." -f @($problemDevices).Count) 'Inventory\drivers.json' (($problemDevices | Select-Object -First 10 | ForEach-Object { "$($_.Name) [$($_.ConfigManagerErrorCode)]" }) -join '; ') @() 'problem-devices'
+            Add-WudCustomFinding $Context 'WUD-PROBLEM-DEVICES' 'Drivers' 'Warning' 'High' 'PnP devices have active problem codes' ("{0} devices report a nonzero ConfigManager error code. They are risk signals, not proven upgrade causes without matching Setup evidence." -f @($problemDevices).Count) 'Inventory\drivers.json' (($problemDevices | Select-Object -First 10 | ForEach-Object { "$(Get-WudObjectPropertyValue $_ 'Name' '<unnamed-device>') [$(Get-WudObjectPropertyValue $_ 'ConfigManagerErrorCode')]" }) -join '; ') @() 'problem-devices'
         }
     }
     $policyFile = Join-Path (Join-Path $Context.SnapshotPath 'Management') 'policy-windows-update.json'
@@ -717,8 +720,8 @@ function ConvertTo-WudApplicationMap {
     $map = @{}
     if (-not $Inventory -or -not $Inventory.Software) { return $map }
     foreach ($item in @($Inventory.Software.Applications)) {
-        $key = ([string]$item.DisplayName).Trim().ToLowerInvariant()
-        if ($key) { $map[$key] = [string]$item.DisplayVersion }
+        $key = ([string](Get-WudObjectPropertyValue $item 'DisplayName')).Trim().ToLowerInvariant()
+        if ($key) { $map[$key] = [string](Get-WudObjectPropertyValue $item 'DisplayVersion') }
     }
     return $map
 }
@@ -728,8 +731,8 @@ function ConvertTo-WudDriverMap {
     $map = @{}
     if (-not $Inventory -or -not $Inventory.Drivers) { return $map }
     foreach ($item in @($Inventory.Drivers.SignedDrivers)) {
-        $key = ([string]$item.DeviceID).Trim().ToLowerInvariant()
-        if ($key) { $map[$key] = [string]$item.DriverVersion }
+        $key = ([string](Get-WudObjectPropertyValue $item 'DeviceID')).Trim().ToLowerInvariant()
+        if ($key) { $map[$key] = [string](Get-WudObjectPropertyValue $item 'DriverVersion') }
     }
     return $map
 }

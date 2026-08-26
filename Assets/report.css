@@ -156,6 +156,8 @@ main { max-width: 1320px; margin: 0 auto; padding: 1.4rem; }
 
 .primary-finding { border-left: 5px solid var(--blocker); }
 .primary-finding.empty { border-left-color: var(--success); }
+.scope-notice { border-left: 5px solid var(--info); }
+.review-bundle { border-left: 5px solid var(--accent); }
 .finding-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .align-right { float: right; }
 .domain-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; }

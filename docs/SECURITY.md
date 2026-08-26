@@ -6,9 +6,9 @@ Treat every output as sensitive endpoint-management or incident-response data. R
 
 The HTML report displays a sensitive-data warning. It is self-contained and does not load fonts, scripts, styles, images, analytics, or other content from the network.
 
-## Local-only analysis
+## Local-only processing
 
-All parsing, correlation, inventory, hashing, and report generation occurs on the endpoint. No evidence is uploaded for AI or cloud analysis. Network use is limited to:
+All collection, parsing, scope classification, inventory, hashing, and report generation occurs on the endpoint. The package contains no AI client and uploads no evidence. An operator may separately drag `ReviewBundle.zip` into an approved external review utility; that is an explicit action outside the tool. Network use by Win11UpgradeDiag is limited to:
 
 - Retrieving SetupDiag through Microsoft's configured official redirect
 - Bounded reachability checks against configured WSUS and selected Microsoft update endpoints
@@ -18,9 +18,9 @@ Use `-NoInternet` to disable SetupDiag download and public endpoint tests. Exist
 
 ## SetupDiag trust
 
-Downloaded SetupDiag is accepted only after a successful Authenticode validation whose certificate subject identifies Microsoft. The report records source URI, file version, signer, and SHA-256. It is invoked with `/NoTel` against a copied local evidence snapshot.
+Downloaded SetupDiag is accepted only after a successful Authenticode validation whose certificate subject identifies Microsoft. The report records source URI, file version, signer, and SHA-256. It is invoked with `/NoTel` against the newest scoped feature-upgrade-style copied source. Initial `Windows\Panther`, tool-command, current-health, and media-scan paths are never supplied as its input.
 
-SetupDiag is not redistributed in this bundle. If verification fails, it is not executed, and the report continues in degraded mode using local deterministic rules.
+SetupDiag is not redistributed in this bundle. If verification fails, it is not executed, and the fact report continues with a visible coverage gap.
 
 ## Bundle integrity
 
@@ -68,7 +68,6 @@ The report:
 - Embeds all CSS and JavaScript
 - Uses a restrictive Content Security Policy with no remote sources
 - Has no executable remediation controls
-- Offers copy buttons only for explanatory text already present in the report
 
 Open reports in a supported browser. Do not weaken browser protections to view them.
 

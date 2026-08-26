@@ -1,15 +1,15 @@
 # Windows Update Analytics
 
-Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade diagnostic companion. It collects preflight or post-failure evidence, correlates Windows Setup and Windows Update signals, and produces a self-contained HTML investigation report plus machine-readable artifacts.
+Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence collector. Version 1.1 collects and normalizes direct facts, applies transparent evidence-scope gates, and produces an offline HTML report plus a compact `ReviewBundle.zip` designed for drag-and-drop human or external AI review.
 
-The initial rules and target map are optimized for Windows 11 23H2 to 25H2. The tool treats that path as a full feature upgrade; it never starts Windows Setup, installs updates, bypasses safeguards, or applies repairs.
+The target map is optimized for Windows 11 23H2 to 25H2. The tool treats that path as a full feature upgrade; it never starts Windows Setup, installs updates, bypasses safeguards, applies repairs, uploads evidence, or asserts a root cause.
 
 ## Quick start
 
 1. Extract the entire bundle to a local folder. Do not run it from inside the ZIP.
 2. Double-click `Start-Win11UpgradeDiag.cmd` and approve the UAC prompt.
 3. Allow the initial collection to finish. Active health checks can make this take from several minutes to more than an hour on a slow or unhealthy machine.
-4. Review `Report.html` in the output folder. If the run was armed before the upgrade, the follow-up collection runs automatically after success or rollback.
+4. Review `Report.html`. For deeper review, drag `ReviewBundle.zip` into the approved analysis utility. If the run was armed before the upgrade, the follow-up collection runs automatically after success or rollback.
 
 By default, one-click `Auto` mode starts a preflight run when there is no armed run and no recent upgrade evidence. When a recent attempt is already visible, it performs an after-the-fact forensic run. An armed run is resumed using its saved state.
 
@@ -22,7 +22,7 @@ By default, one-click `Auto` mode starts a preflight run when there is no armed 
 - A local NTFS location for the extracted bundle and ProgramData staging
 - Optional internet access only for Microsoft SetupDiag retrieval and diagnostic endpoint tests
 
-The bundle is intentionally unsigned for the initial release. The launcher uses a process-scoped execution-policy bypass; it does not change the machine execution policy. Verify `BundleManifest.sha256` before distribution if the transport channel is not trusted.
+The bundle remains intentionally unsigned and hash-manifested. The launcher uses a process-scoped execution-policy bypass; it does not change the machine execution policy. Verify `BundleManifest.sha256` before distribution if the transport channel is not trusted.
 
 ## Command interface
 
@@ -67,7 +67,7 @@ Media scanning is optional. It requires `-AcceptWindowsEula`, checks the media a
 | Mode | Behavior |
 |---|---|
 | `Auto` | Uses saved state, current build, and recent setup/rollback evidence to select preflight, resume, or forensic behavior. |
-| `Preflight` | Collects a baseline, reports readiness, and arms a temporary SYSTEM follow-up task and guarded SetupConfig hooks. |
+| `Preflight` | Collects a baseline and arms a temporary SYSTEM follow-up task and guarded SetupConfig hooks. It does not predict upgrade success. |
 | `Resume` | Continues a previously armed run after a reboot, produces pre/post comparison, then removes owned persistence. Normally invoked automatically. |
 | `Forensic` | Performs a one-shot investigation of the evidence currently present on the device without arming follow-up. |
 | `Disarm` | Removes only this run's task/hooks and restores its exact SetupConfig backup when safe. Diagnostic artifacts remain. |
@@ -83,7 +83,7 @@ The tool can run these read-only diagnostics with bounded timeouts:
 - DISM `/Online /Cleanup-Image /ScanHealth`
 - SFC `/verifyonly`
 - Compatibility Appraiser refresh
-- Microsoft SetupDiag against the copied evidence snapshot, with `/NoTel`
+- Microsoft SetupDiag against the newest scoped feature-upgrade-style source, with `/NoTel`
 - Windows Update and Delivery Optimization log conversion
 - Setup `/compat scanonly` only when matching media and explicit EULA acceptance are supplied
 
@@ -95,10 +95,14 @@ Every finalized run is designed to contain:
 
 | Artifact | Purpose |
 |---|---|
-| `Report.html` | Offline, searchable investigation report with findings, timeline, coverage, and evidence index. |
-| `Summary.json` | Stable fleet-ingestion contract. |
-| `Findings.csv` | Flat finding rollup for triage. |
-| `Timeline.csv` | Normalized setup/update/event sequence. |
+| `Report.html` | Offline, searchable fact report with attempt scope, direct records, included timeline, and collection coverage. |
+| `ReviewBundle.zip` | Compact drag-and-drop external-review package with JSONL/CSV facts, attempts, inventory, exclusions, evidence hashes, and bounded excerpts. |
+| `Summary.json` | Stable fleet-ingestion contract, including fact and attempt-scope summaries. |
+| `Facts.csv` | Flat direct-fact export for triage and ingestion. |
+| `Findings.csv` | Retained compatibility artifact; header-only in fact-only mode because v1.1 emits no causal findings. |
+| `Timeline.csv` | Only validated Windows Update setup records and source-reported update history; no proximity-only correlations. |
+| `Attempts.json` | Every setup candidate, its classification, exact scope gates, corroborating evidence, and inclusion decision. |
+| `ExcludedEvidence.json` | Imaging, scan-only, tool-generated, non-Windows-Update, and unclassified setup evidence exclusions. |
 | `Inventory.json` | Collected normalized snapshots and collector records. |
 | `Evidence.zip` | Full-fidelity copied logs and command output. |
 | `Manifest.json` | File provenance, paths, sizes, and SHA-256 hashes. |
@@ -111,14 +115,25 @@ Locked, cleaned, timed-out, skipped, or oversized sources are recorded as gaps. 
 
 | Code | Meaning |
 |---:|---|
-| `0` | Complete report; ready or upgrade successful. |
-| `10` | Complete report with active warnings requiring attention. |
-| `20` | Active blocker, failure, or rollback detected. |
+| `0` | Complete fact report; no source-reported failed/rollback outcome selected. This is not a readiness guarantee. |
+| `10` | Reserved for a complete report with a direct attention status. |
+| `20` | Source-reported failed Windows Update attempt or validated rollback outcome. |
 | `30` | Report produced but materially incomplete. |
 | `40` | Fatal tool failure; no valid report. |
 | `50` | Unsupported OS, PowerShell, or privilege state. |
 
-Older evidence is retained but marked `Historical`; it does not by itself set the current exit code or outcome.
+Excluded and older evidence remains indexed, but it cannot enter the included upgrade timeline unless it independently passes every v1.1 Windows Update scope gate.
+
+## Fact-only and external review model
+
+Version 1.1 uses four record types:
+
+- `Observed`: a value or log record read directly by the collector.
+- `SourceReported`: a result emitted by Windows Update, Windows Setup, or scoped SetupDiag.
+- `Decoded`: a deterministic code-to-name or extend-code-to-phase/operation mapping.
+- `Computed`: a transparent diff or scope-gate result, never a causal claim.
+
+A setup candidate is included as `WindowsUpdateFeatureUpgrade` only when it passes Windows Update ownership, feature-upgrade semantics, temporal overlap, target version/build, completed Windows image state, and contamination-exclusion gates. `Windows\Panther` imaging, `/Compat ScanOnly`, general CBS/DISM servicing, this tool's own output, explicit non-Windows-Update deployments, and ambiguous setup records are kept for provenance but excluded from upgrade conclusions.
 
 ## Files and state
 
@@ -133,10 +148,11 @@ Fleet-ingestion tooling can use the bundled machine-readable contract at `Data\S
 
 ## Validation
 
-The cross-platform fixture runner checks parsers, rule correlation, report escaping/CSP, all output contracts, archive reopening, and evidence references:
+The cross-platform runners check legacy parsers plus v1.1 attempt gates, contamination exclusions, sparse PowerShell objects, report escaping/CSP, review-bundle contracts, archive reopening, and evidence references:
 
 ```powershell
 pwsh -NoProfile -File .\Tests\Invoke-FixtureTests.ps1
+pwsh -NoProfile -File .\Tests\Invoke-V110Tests.ps1
 ```
 
 If Pester 5 is installed, run:
