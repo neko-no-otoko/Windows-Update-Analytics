@@ -23,6 +23,7 @@ Assert-WudV212 ($launcherSource.IndexOf('Prepare-Win11UpgradeDiag.cmd" -Check') 
 Assert-WudV212 ($launcherSource -match 'WUD_PREP_EXIT' -and $launcherSource -match 'AllSigned, WDAC, or AppLocker') 'Launcher distinguishes preparation failure from collector failure'
 Assert-WudV212 ($prepareSource.IndexOf('BundleManifest.sha256') -lt $prepareSource.IndexOf('Unblock-File')) 'Every bundle is manifest-verified before any marker is removed'
 Assert-WudV212 ($prepareSource -match 'Security\.Cryptography\.SHA256' -and $prepareSource -notmatch 'Get-FileHash') 'Preparation hashes through .NET without depending on PowerShell module auto-loading'
+Assert-WudV212 ($prepareSource -match 'PSModulePath=.*WindowsPowerShell\\Modules.*System32\\WindowsPowerShell\\v1\.0\\Modules') 'Preparation gives its isolated Windows PowerShell child the canonical inbox module paths'
 Assert-WudV212 ($prepareSource -match "Zone\.Identifier" -and $prepareSource -match "-ieq '-Check'" -and $prepareSource -match "-ine '-Apply'") 'Preparation exposes check, confirmed, and managed-apply paths'
 Assert-WudV212 ($prepareSource -match 'Get-ExecutionPolicy -List' -and $prepareSource -match "MachinePolicy" -and $prepareSource -match "UserPolicy" -and $prepareSource -match "AllSigned" -and $prepareSource -match "Restricted") 'Enforced signing-policy boundaries are diagnosed explicitly'
 Assert-WudV212 ($prepareSource -notmatch 'Set-ExecutionPolicy' -and $securitySource -match 'does not change.*execution policy') 'Preparation does not change PowerShell policy'

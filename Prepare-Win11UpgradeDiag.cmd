@@ -14,6 +14,12 @@ if not exist "%WUD_PS%" (
   exit /b 50
 )
 
+rem A caller such as PowerShell 7 can replace PSModulePath with paths that do
+rem not contain the inbox Windows PowerShell modules. Give the isolated 5.1
+rem child its canonical module roots so inbox security cmdlets remain
+rem remain available without changing any machine or user configuration.
+set "PSModulePath=%ProgramFiles%\WindowsPowerShell\Modules;%SystemRoot%\System32\WindowsPowerShell\v1.0\Modules"
+
 "%WUD_PS%" -NoProfile -Command ^
   "$ErrorActionPreference = 'Stop';" ^
   "try {" ^
