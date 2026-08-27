@@ -33,7 +33,8 @@ if not exist "%WUD_PS%" (
   "    if (-not $candidate.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw ('Bundle manifest path leaves the package: ' + $relative) };" ^
   "    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw ('Bundle file is missing: ' + $relative) };" ^
   "    $expected = $match.Groups[1].Value.ToLowerInvariant();" ^
-  "    $actual = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant();" ^
+  "    $stream = [IO.File]::Open($candidate, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read);" ^
+  "    try { $sha = [Security.Cryptography.SHA256]::Create(); try { $actual = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } } finally { $stream.Dispose() };" ^
   "    if ($actual -ne $expected) { throw ('Bundle integrity check failed for: ' + $relative) };" ^
   "    $verified++;" ^
   "  };" ^
