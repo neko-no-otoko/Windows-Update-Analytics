@@ -28,10 +28,12 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$toolVersion = '1.1.2'
+$toolVersion = '2.0.0'
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $context = $null
 $armedState = $null
+$state = $null
+$resumeState = $null
 $runLock = $null
 
 function Enter-WudRunLock {
@@ -63,6 +65,7 @@ if (Test-Path -LiteralPath $bundleManifest) {
 
 try {
     Import-Module (Join-Path $toolRoot 'Modules\Common.psm1') -Force -ErrorAction Stop
+    Import-Module (Join-Path $toolRoot 'Modules\Recorder.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $toolRoot 'Modules\Collectors.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $toolRoot 'Modules\Analysis.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $toolRoot 'Modules\Review.psm1') -Force -ErrorAction Stop
@@ -174,7 +177,7 @@ try {
             Write-WudLog -Context $context -Level WARN -Message 'The requested UNC copy is still pending. The local report remains valid and the active pointer was retained.'
             exit 10
         }
-        if ([DateTime]::UtcNow -gt [DateTimeOffset]::Parse([string]$state.ExpiresUtc).UtcDateTime) {
+        if ([DateTime]::UtcNow -gt (ConvertTo-WudUtcDateTime $state.ExpiresUtc)) {
             Write-WudLog -Context $context -Level WARN -Message 'The armed diagnostic run expired before a stable upgrade outcome was observed.'
             $null = Remove-WudPersistence -Context $context -State $state -FinalStatus 'Expired'
             exit 10
@@ -190,7 +193,7 @@ try {
         $resumeSignal = Get-WudResumeSignal -State $state
         Write-WudJsonAtomic -Path (Join-Path $context.RunPath 'State\last-resume-signal.json') -InputObject $resumeSignal -Depth 10
         if (-not $resumeSignal.Ready) {
-            Write-WudLog -Context $context -Level INFO -Message 'No target-build transition, hook marker, or setup evidence newer than the baseline was detected. The run remains armed.'
+            Write-WudLog -Context $context -Level INFO -Message 'No target-build transition, owned hook marker, rollback source, or terminal Windows Update/Setup result newer than the baseline was detected. The run remains armed.'
             exit 10
         }
         Write-WudLog -Context $context -Level INFO -Message ("Resume collection was authorized by: {0}" -f (@($resumeSignal.Signals | ForEach-Object Kind) -join ', '))
@@ -232,7 +235,29 @@ try {
     }
     catch { }
 
+    if ($Mode -eq 'Resume') {
+        $stopResult = Stop-WudRecorderTask -State $state
+        Write-WudLog -Context $context -Level INFO -Message ("Persistent recorder stop request: {0}." -f $stopResult.Status)
+        $lockPath = Join-Path $context.RunPath 'State\recorder.lock'
+        $lockDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        while ((Test-Path -LiteralPath $lockPath) -and [DateTime]::UtcNow -lt $lockDeadline) {
+            $probeLock = $null
+            try { $probeLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); break }
+            catch { Start-Sleep -Milliseconds 500 }
+            finally { if ($probeLock) { $probeLock.Dispose() } }
+        }
+        $null = Invoke-WudRecorderSample -RunPath $context.RunPath -TargetVersion $context.TargetVersion -TargetBuild ([int]$context.Target.buildFamily) -Reason 'FinalCollectionBoundary' -ProgressBucketSize ([int]$context.Settings.recorder.progressBucketPercent) -MaximumCheckpoints ([int]$context.Settings.recorder.maximumCheckpoints) -MaximumCheckpointFileBytes ([long]$context.Settings.recorder.maximumCheckpointFileBytes) -MaximumCheckpointBytes ([long]$context.Settings.recorder.maximumCheckpointBytes) -ForceCheckpoint
+    }
+    else {
+        $reason = if ($Mode -eq 'Preflight') { 'PreflightBaseline' } else { 'ForensicSnapshot' }
+        $null = Invoke-WudRecorderSample -RunPath $context.RunPath -TargetVersion $context.TargetVersion -TargetBuild ([int]$context.Target.buildFamily) -Reason $reason -ProgressBucketSize ([int]$context.Settings.recorder.progressBucketPercent) -MaximumCheckpoints ([int]$context.Settings.recorder.maximumCheckpoints) -MaximumCheckpointFileBytes ([long]$context.Settings.recorder.maximumCheckpointFileBytes) -MaximumCheckpointBytes ([long]$context.Settings.recorder.maximumCheckpointBytes) -ForceCheckpoint
+    }
     Invoke-WudAllCollectors -Context $context
+    $recorderRead = Read-WudJsonLines -Path (Join-Path $context.RunPath 'Evidence\Recorder\ProgressSamples.jsonl')
+    $context.Recorder = Get-WudRecorderTelemetrySummary -Samples @($recorderRead.Records)
+    if (@($recorderRead.InvalidLines).Count -gt 0) {
+        $null = Add-WudCollectionGap -Context $context -Collector 'recorder' -Source $recorderRead.Path -Status 'InvalidOrTruncatedJsonLine' -Detail ("{0} JSONL line(s) could not be parsed; valid records were retained." -f @($recorderRead.InvalidLines).Count)
+    }
     $null = Invoke-WudFactAnalysis -Context $context
 
     if ($Mode -eq 'Preflight') {
@@ -256,6 +281,13 @@ try {
 
     $null = Export-WudReviewBundle -Context $context
     $reportPath = Export-WudReportArtifacts -Context $context
+    if ($Mode -eq 'Preflight' -and $armedState) {
+        $recorderStart = Start-WudRecorderTask -State $armedState
+        $armedState | Add-Member -NotePropertyName RecorderStart -NotePropertyValue $recorderStart -Force
+        Save-WudRunState -Context $context -State $armedState -SetActive $true
+        if ($recorderStart.Status -eq 'Started') { Write-WudLog -Context $context -Level INFO -Message 'Persistent 60-second progress recorder started.' }
+        else { Write-WudLog -Context $context -Level WARN -Message ("Persistent recorder did not start immediately: {0}" -f $recorderStart.Error) }
+    }
     if ($Mode -eq 'Resume') {
         $deferCopy = -not [string]::IsNullOrWhiteSpace($context.CopyTo) -and (-not $context.LastCopyResult -or -not $context.LastCopyResult.Succeeded)
         if ($deferCopy) {
@@ -283,6 +315,13 @@ catch {
         try { Write-WudLog -Context $context -Level ERROR -Message ("Fatal tool failure: {0}" -f $detail) } catch { }
         if ($armedState) {
             try { $null = Remove-WudPersistence -Context $context -State $armedState -FinalStatus 'ToolFailureDisarmed' } catch { }
+        }
+        elseif ($Mode -eq 'Resume' -and $state) {
+            try {
+                $restart = Start-WudRecorderTask -State $state
+                Write-WudLog -Context $context -Level WARN -Message ("Final collection failed; recorder restart status is {0} so the armed run can be retried." -f $restart.Status)
+            }
+            catch { }
         }
         try {
             $failurePath = Join-Path $context.OutputPath 'Failure.txt'

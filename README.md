@@ -1,6 +1,6 @@
 # Windows Update Analytics
 
-Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence collector. Version 1.1 collects and normalizes direct facts, applies transparent evidence-scope gates, and produces an offline HTML report plus a compact `ReviewBundle.zip` designed for drag-and-drop human or external AI review.
+Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.0 starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture. It normalizes direct facts, applies transparent evidence-scope gates, and produces an offline HTML report plus a compact `ReviewBundle.zip` designed for drag-and-drop human or external AI review.
 
 The target map is optimized for Windows 11 23H2 to 25H2. The tool treats that path as a full feature upgrade; it never starts Windows Setup, installs updates, bypasses safeguards, applies repairs, uploads evidence, or asserts a root cause.
 
@@ -8,8 +8,9 @@ The target map is optimized for Windows 11 23H2 to 25H2. The tool treats that pa
 
 1. Extract the entire bundle to a local folder. Do not run it from inside the ZIP.
 2. Double-click `Start-Win11UpgradeDiag.cmd` and approve the UAC prompt.
-3. Allow the initial collection to finish. Active health checks can make this take from several minutes to more than an hour on a slow or unhealthy machine.
-4. Open the new `Win11UpgradeDiag-<Computer>-<RunId>` folder under `%PUBLIC%\Documents` and review `Report.html`. For deeper review, drag `ReviewBundle.zip` into the approved analysis utility. If the run was armed before the upgrade, the follow-up collection runs automatically after success or rollback.
+3. Allow the initial collection to finish. Active health checks can make this take from several minutes to more than an hour on a slow or unhealthy machine. When the report completes, the persistent recorder is running.
+4. Leave the run armed while the normal management platform offers, downloads, and installs the update.
+5. Open the new `Win11UpgradeDiag-<Computer>-<RunId>` folder under `%PUBLIC%\Documents` and review `Report.html`. For deeper review, drag `ReviewBundle.zip` into the approved analysis utility. The final collection runs automatically after success or rollback.
 
 By default, one-click `Auto` mode starts a preflight run when there is no armed run and no recent upgrade evidence. When a recent attempt is already visible, it performs an after-the-fact forensic run. An armed run is resumed using its saved state.
 
@@ -74,7 +75,16 @@ Media scanning is optional. It requires `-AcceptWindowsEula`, checks the media a
 
 Arming expires after 30 days by default. `-NoSetupHooks` disables SetupConfig integration but retains the delayed startup task. Repeated calls use saved run identity and guarded cleanup to avoid duplicate ownership.
 
-The scheduled task does not interpret an ordinary reboot as upgrade completion. It finalizes only after a target-build transition, an owned setup outcome marker, or qualifying setup/rollback evidence newer than the baseline; otherwise it remains armed until a later trigger or expiry.
+Two SYSTEM tasks are created for an armed run. `Recorder-<RunId>` samples immediately and every 60 seconds, restarts after reboot or failure, and never finalizes the case. `Resume-<RunId>` performs the delayed, heavy final collection only after a target-build transition, an owned setup outcome marker, or qualifying setup/rollback evidence newer than the baseline. An ordinary reboot is not interpreted as upgrade completion.
+
+## Four-layer evidence design
+
+1. **Persistent progress samples:** append-only `ProgressSamples.jsonl` records current build, boot identity, Setup progress/state, pending-reboot signals, active Setup processes, Delivery Optimization job counters, peers, and performance snapshots.
+2. **Native evidence first:** Panther, rollback, Windows Update ETL, USO, Delivery Optimization, servicing, event, crash, and management sources are copied before any readable conversion or active diagnostic runs.
+3. **Boundary checkpoints:** a state, boot, build, or 10-percent Setup-progress-bucket change creates a timestamped native checkpoint with its own manifest. A recent, run-window Setup log can label a source-reported Downlevel, SafeOS, FirstBoot, or OOBE phase; old imaging logs cannot activate a recorder phase by themselves.
+4. **Final forensic capture:** after success, rollback, failure evidence, or a stable post-reboot signal, the recorder stops and a final passive-first collection, normalization pass, evidence archive, and report are produced.
+
+Delivery Optimization traffic without a direct Windows Update caller or Microsoft update URL is labeled `DeliveryOptimizationTransferObserved`, not an upgrade download. Even Windows Update-owned transport remains context until the setup-attempt gates confirm a feature update.
 
 ## What it does and does not do
 
@@ -99,8 +109,12 @@ Every finalized run is designed to contain:
 | `ReviewBundle.zip` | Compact drag-and-drop external-review package with JSONL/CSV facts, attempts, inventory, exclusions, evidence hashes, and bounded excerpts. |
 | `Summary.json` | Stable fleet-ingestion contract, including fact and attempt-scope summaries. |
 | `Facts.csv` | Flat direct-fact export for triage and ingestion. |
-| `Findings.csv` | Retained compatibility artifact; header-only in fact-only mode because v1.1 emits no causal findings. |
+| `Findings.csv` | Retained compatibility artifact; header-only in fact-only mode because v2 emits no causal findings. |
 | `Timeline.csv` | Only validated Windows Update setup records and source-reported update history; no proximity-only correlations. |
+| `RecorderSummary.json` | Sampling window, observed states, Delivery Optimization byte/source/throughput rollups, and timestamps. |
+| `ProgressSamples.jsonl` | Append-only, timestamped native progress observations suitable for streaming or external review. |
+| `StateTransitions.jsonl` | Recorder boundaries with prior/current state, boot identity, and evidence locator. |
+| `Checkpoints.json` | Rollup of timestamped native checkpoint manifests. |
 | `Attempts.json` | Every setup candidate, its classification, exact scope gates, corroborating evidence, and inclusion decision. |
 | `ExcludedEvidence.json` | Imaging, scan-only, tool-generated, non-Windows-Update, and unclassified setup evidence exclusions. |
 | `Inventory.json` | Collected normalized snapshots and collector records. |
@@ -122,11 +136,11 @@ Locked, cleaned, timed-out, skipped, or oversized sources are recorded as gaps. 
 | `40` | Fatal tool failure; no valid report. |
 | `50` | Unsupported OS, PowerShell, or privilege state. |
 
-Excluded and older evidence remains indexed, but it cannot enter the included upgrade timeline unless it independently passes every v1.1 Windows Update scope gate.
+Excluded and older evidence remains indexed, but it cannot enter the included upgrade timeline unless it independently passes every v2 Windows Update scope gate.
 
 ## Fact-only and external review model
 
-Version 1.1 uses four record types:
+Version 2.0 uses four record types:
 
 - `Observed`: a value or log record read directly by the collector.
 - `SourceReported`: a result emitted by Windows Update, Windows Setup, or scoped SetupDiag.
@@ -134,6 +148,8 @@ Version 1.1 uses four record types:
 - `Computed`: a transparent diff or scope-gate result, never a causal claim.
 
 A setup candidate is included as `WindowsUpdateFeatureUpgrade` only when it passes Windows Update ownership, feature-upgrade semantics, temporal overlap, target version/build, completed Windows image state, and contamination-exclusion gates. `Windows\Panther` imaging, `/Compat ScanOnly`, general CBS/DISM servicing, this tool's own output, explicit non-Windows-Update deployments, and ambiguous setup records are kept for provenance but excluded from upgrade conclusions.
+
+Outcome is no longer a single ambiguous inference. `Summary.json` separately reports `CurrentOsState`, `BuildTransition`, `AttemptOutcome`, and `DeploymentSource`. A device already on 25H2 is therefore `Target OS Present` even when no retained evidence proves how it arrived there.
 
 ## Files and state
 
@@ -148,11 +164,12 @@ Fleet-ingestion tooling can use the bundled machine-readable contract at `Data\S
 
 ## Validation
 
-The cross-platform runners check legacy parsers plus v1.1 attempt gates, contamination exclusions, sparse PowerShell objects, report escaping/CSP, review-bundle contracts, archive reopening, and evidence references:
+The cross-platform runners check legacy parsers, attempt gates, contamination exclusions, sparse PowerShell objects, JSONL recovery, recorder state transitions, Delivery Optimization rollups, process-status contracts, report escaping/CSP, review-bundle contracts, archive reopening, and evidence references:
 
 ```powershell
 pwsh -NoProfile -File .\Tests\Invoke-FixtureTests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V110Tests.ps1
+pwsh -NoProfile -File .\Tests\Invoke-V200Tests.ps1
 ```
 
 If Pester 5 is installed, run:

@@ -128,6 +128,19 @@ function Get-WudErrorDetail {
     return (@($message, $location, $stack) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join [Environment]::NewLine
 }
 
+function ConvertTo-WudUtcDateTime {
+    param([Parameter(Mandatory = $true)]$Value)
+    if ($Value -is [DateTimeOffset]) { return ([DateTimeOffset]$Value).UtcDateTime }
+    if ($Value -is [DateTime]) {
+        $date = [DateTime]$Value
+        if ($date.Kind -eq [DateTimeKind]::Unspecified) { return [DateTime]::SpecifyKind($date, [DateTimeKind]::Utc) }
+        return $date.ToUniversalTime()
+    }
+    $parsed = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { return $parsed.UtcDateTime }
+    throw "Timestamp is not a supported UTC/offset value: $Value"
+}
+
 function Get-WudTargetDefinition {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
@@ -165,7 +178,7 @@ function New-WudRunContext {
     $null = New-WudDirectory -Path $OutputPath
 
     return [pscustomobject][ordered]@{
-        SchemaVersion       = 1
+        SchemaVersion       = 2
         ToolVersion        = $ToolVersion
         ToolRoot           = $ToolRoot
         RunId              = $RunId
@@ -201,7 +214,18 @@ function New-WudRunContext {
         LastCopyResult     = $null
         ReviewData         = $null
         ReviewBundle       = $null
-        Outcome            = 'Unknown'
+        Recorder            = $null
+        StatusModel        = [pscustomobject][ordered]@{
+            CurrentOsState   = 'Unreadable'
+            BuildTransition  = 'NotObserved'
+            AttemptOutcome   = 'NotObserved'
+            DeploymentSource = 'Unattributed'
+            OutcomeBanner    = 'No Upgrade Outcome Observed'
+            TargetPresent    = $false
+            WindowsUpdateEvidenceConfirmed = $false
+            ObservedBuilds   = @()
+        }
+        Outcome            = 'Not Determined'
         PrimaryFinding     = $null
         ExitCode           = 0
     }
@@ -271,6 +295,34 @@ function Add-WudCollectionGap {
     return $gap
 }
 
+function Get-WudArtifactObservation {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return [pscustomobject][ordered]@{ Path = $Path; Exists = $false; Present = $false; IsDirectory = $false; FileCount = 0; Length = 0L; LastWriteUtc = $null; Sha256 = $null; Fingerprint = 'Absent' }
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (-not $item.PSIsContainer) {
+        $hash = Get-WudFileHashSafe -Path $Path
+        return [pscustomobject][ordered]@{
+            Path = $Path; Exists = $true; Present = $true; IsDirectory = $false; FileCount = 1; Length = [long]$item.Length
+            LastWriteUtc = $item.LastWriteTimeUtc.ToString('o'); Sha256 = $hash
+            Fingerprint = 'File|{0}|{1}|{2}' -f $item.Length, $item.LastWriteTimeUtc.Ticks, $hash
+        }
+    }
+    $files = @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction SilentlyContinue)
+    $length = 0L
+    $latest = $null
+    foreach ($file in $files) {
+        $length += [long]$file.Length
+        if ($null -eq $latest -or $file.LastWriteTimeUtc -gt $latest) { $latest = $file.LastWriteTimeUtc }
+    }
+    return [pscustomobject][ordered]@{
+        Path = $Path; Exists = $true; Present = $files.Count -gt 0; IsDirectory = $true; FileCount = $files.Count; Length = $length
+        LastWriteUtc = if ($latest) { $latest.ToString('o') } else { $null }; Sha256 = $null
+        Fingerprint = 'Directory|{0}|{1}|{2}' -f $files.Count, $length, $(if ($latest) { $latest.Ticks } else { 0 })
+    }
+}
+
 function Invoke-WudProcess {
     param(
         [Parameter(Mandatory = $true)]$Context,
@@ -279,19 +331,24 @@ function Invoke-WudProcess {
         [Parameter(Mandatory = $true)][string]$Name,
         [int]$TimeoutSeconds = 600,
         [int[]]$SuccessExitCodes = @(0),
-        [string]$WorkingDirectory
+        [string]$WorkingDirectory,
+        [string[]]$ExpectedArtifacts = @()
     )
     $commandPath = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Commands')
     $safeName = ($Name -replace '[^A-Za-z0-9._-]', '_')
     $stdoutPath = Join-Path $commandPath ($safeName + '.stdout.txt')
     $stderrPath = Join-Path $commandPath ($safeName + '.stderr.txt')
     $argumentLine = (($ArgumentList | ForEach-Object { ConvertTo-WudCommandLineArgument -Value ([string]$_) }) -join ' ')
+    $artifactBefore = @{}
+    foreach ($artifactPath in @($ExpectedArtifacts)) { $artifactBefore[$artifactPath] = Get-WudArtifactObservation -Path $artifactPath }
     $started = [DateTime]::UtcNow
     Write-WudLog -Context $Context -Level INFO -Message ("Running {0}" -f $Name)
     $process = $null
     $timedOut = $false
     $errorMessage = $null
+    $errorDetail = $null
     $exitCode = $null
+    $processId = $null
     try {
         $parameters = @{
             FilePath               = $FilePath
@@ -305,6 +362,7 @@ function Invoke-WudProcess {
         if (@($ArgumentList).Count -gt 0) { $parameters.ArgumentList = $argumentLine }
         if ($WorkingDirectory) { $parameters.WorkingDirectory = $WorkingDirectory }
         $process = Start-Process @parameters
+        $processId = $process.Id
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
         while (-not $process.HasExited) {
             if ([DateTime]::UtcNow -ge $deadline) {
@@ -321,10 +379,39 @@ function Invoke-WudProcess {
     }
     catch {
         $errorMessage = $_.Exception.Message
-        Write-WudText -Path $stderrPath -Text $errorMessage
+        $errorDetail = Get-WudErrorDetail -ErrorRecord $_
+        Write-WudText -Path $stderrPath -Text $errorDetail
     }
     $ended = [DateTime]::UtcNow
     $succeeded = (-not $timedOut) -and ($null -ne $exitCode) -and ($SuccessExitCodes -contains [int]$exitCode)
+    $artifactRecords = @($ExpectedArtifacts | ForEach-Object {
+        $after = Get-WudArtifactObservation -Path $_
+        $before = $artifactBefore[$_]
+        [pscustomobject][ordered]@{
+            Path = $_
+            Present = $after.Present
+            ChangedDuringProcess = $after.Present -and $after.Fingerprint -ne $before.Fingerprint
+            FileCount = $after.FileCount
+            Length = $after.Length
+            LastWriteUtc = $after.LastWriteUtc
+            Sha256 = $after.Sha256
+        }
+    })
+    $artifactsCaptured = @($artifactRecords).Count -gt 0 -and @($artifactRecords | Where-Object { $_.Present -and $_.ChangedDuringProcess }).Count -eq @($artifactRecords).Count
+    $executionStatus = if ($timedOut) { 'TimedOut' }
+        elseif ($errorMessage) { 'StartFailed' }
+        elseif ($null -eq $exitCode) { 'ExitCodeUnavailable' }
+        elseif ($succeeded) { 'Succeeded' }
+        else { 'ExitedNonzero' }
+    if ($executionStatus -ne 'Succeeded' -and $artifactsCaptured) { $executionStatus = 'ArtifactCapturedDespiteProcessUncertainty' }
+    $detail = switch ($executionStatus) {
+        'Succeeded' { 'Process completed with an accepted exit code.' }
+        'TimedOut' { "Process exceeded its $TimeoutSeconds second limit." }
+        'StartFailed' { $errorDetail }
+        'ExitCodeUnavailable' { 'The process object did not expose an exit code.' }
+        'ArtifactCapturedDespiteProcessUncertainty' { 'Every expected artifact was captured, but process completion could not be confirmed.' }
+        default { "Process exited with code $exitCode (0x{0:X8})." -f ([long]$exitCode -band 0xFFFFFFFFL) }
+    }
     $result = [pscustomobject][ordered]@{
         Name          = $Name
         FilePath      = $FilePath
@@ -332,19 +419,26 @@ function Invoke-WudProcess {
         StartedUtc    = $started.ToString('o')
         EndedUtc      = $ended.ToString('o')
         DurationMs    = [int]($ended - $started).TotalMilliseconds
+        ProcessId     = $processId
         ExitCode      = $exitCode
         ExitCodeHex   = if ($null -ne $exitCode) { '0x{0:X8}' -f ([long]$exitCode -band 0xFFFFFFFFL) } else { $null }
         TimedOut      = $timedOut
         Succeeded     = $succeeded
+        ExecutionStatus = $executionStatus
+        ExitCodeAvailable = $null -ne $exitCode
+        Detail        = $detail
+        ExpectedArtifacts = @($artifactRecords)
         StandardOut  = $stdoutPath
         StandardError = $stderrPath
         Error         = $errorMessage
+        ErrorDetail   = $errorDetail
     }
     Write-WudJsonAtomic -Path (Join-Path $commandPath ($safeName + '.result.json')) -InputObject $result
     if ($Context.PSObject.Properties['ProcessRecords']) { $null = $Context.ProcessRecords.Add($result) }
-    if ($timedOut) { Write-WudLog -Context $Context -Level WARN -Message "$Name exceeded its $TimeoutSeconds second limit and was stopped." }
-    elseif ($errorMessage) { Write-WudLog -Context $Context -Level WARN -Message "$Name could not start: $errorMessage" }
-    elseif (-not $succeeded) { Write-WudLog -Context $Context -Level WARN -Message "$Name returned $exitCode ($($result.ExitCodeHex))." }
+    if ($executionStatus -eq 'TimedOut') { Write-WudLog -Context $Context -Level WARN -Message "$Name exceeded its $TimeoutSeconds second limit and was stopped." }
+    elseif ($executionStatus -eq 'StartFailed') { Write-WudLog -Context $Context -Level WARN -Message "$Name could not start: $errorDetail" }
+    elseif ($executionStatus -eq 'ArtifactCapturedDespiteProcessUncertainty') { Write-WudLog -Context $Context -Level WARN -Message "$Name produced every expected artifact, but process completion was uncertain." }
+    elseif (-not $succeeded) { Write-WudLog -Context $Context -Level WARN -Message ("{0} returned an explicit status of {1}: {2}" -f $Name, $executionStatus, $detail) }
     return $result
 }
 
@@ -358,6 +452,7 @@ function Invoke-WudCollector {
     )
     $started = [DateTime]::UtcNow
     $processRecordStart = if ($Context.PSObject.Properties['ProcessRecords']) { @($Context.ProcessRecords).Count } else { 0 }
+    $collectionGapStart = if ($Context.PSObject.Properties['CollectionGaps']) { @($Context.CollectionGaps).Count } else { 0 }
     $status = 'Succeeded'
     $detail = $null
     Write-WudLog -Context $Context -Level INFO -Message ("Collector {0}: {1}" -f $Id, $Description)
@@ -382,9 +477,19 @@ function Invoke-WudCollector {
         }
         elseif (@($unsuccessful).Count -gt 0) {
             $status = 'CompletedWithWarnings'
-            $detail = 'Non-success process result: ' + (@($unsuccessful | ForEach-Object {
-                '{0} ({1})' -f (Get-WudObjectPropertyValue $_ 'Name' '<unnamed-process>'), (Get-WudObjectPropertyValue $_ 'ExitCodeHex' '<no-exit-code>')
+            $detail = 'Explicit non-success process result: ' + (@($unsuccessful | ForEach-Object {
+                '{0} [{1}] {2}' -f (Get-WudObjectPropertyValue $_ 'Name' '<unnamed-process>'), (Get-WudObjectPropertyValue $_ 'ExecutionStatus' 'UnknownStatus'), (Get-WudObjectPropertyValue $_ 'Detail' (Get-WudObjectPropertyValue $_ 'ExitCodeHex' '<no-exit-code>'))
             }) -join ', ')
+        }
+    }
+    if ($status -in @('Succeeded', 'CompletedWithWarnings') -and $Context.PSObject.Properties['CollectionGaps']) {
+        $newGaps = @($Context.CollectionGaps | Select-Object -Skip $collectionGapStart)
+        if ($newGaps.Count -gt 0) {
+            $gapDetail = 'Recorded evidence/provider status: ' + (@($newGaps | ForEach-Object {
+                '{0} [{1}]' -f (Get-WudObjectPropertyValue $_ 'Source' '<unknown-source>'), (Get-WudObjectPropertyValue $_ 'Status' 'UnknownStatus')
+            }) -join ', ')
+            if ($status -eq 'Succeeded') { $status = 'CompletedWithWarnings'; $detail = $gapDetail }
+            else { $detail = (@($detail, $gapDetail) | Where-Object { $_ }) -join ' | ' }
         }
     }
     $ended = [DateTime]::UtcNow
@@ -594,5 +699,5 @@ Export-ModuleMember -Function @(
     'ConvertTo-WudExtendedLengthPath', 'Open-WudFileReadStream',
     'Export-WudRegistryTree', 'ConvertTo-WudByteSize', 'Get-WudSeverityRank', 'Get-WudConfidenceRank',
     'Resolve-WudExitCode', 'ConvertTo-WudCommandLineArgument', 'ConvertTo-WudCsvCell', 'Add-WudCollectionGap',
-    'Get-WudObjectPropertyValue', 'Get-WudErrorDetail'
+    'Get-WudObjectPropertyValue', 'Get-WudErrorDetail', 'ConvertTo-WudUtcDateTime'
 )

@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "configurationVersion": "1.1.0",
+  "schemaVersion": 2,
+  "configurationVersion": "2.0.0",
   "eventLookbackDays": 30,
   "maximumTextParseBytes": 536870912,
   "maximumEvidenceMatchesPerRule": 25,
@@ -22,5 +22,12 @@
   ],
   "minimumRecommendedOsFreeBytes": 32212254720,
   "minimumStagingReserveBytes": 1073741824,
-  "maximumDefaultDumpBytes": 2147483648
+  "maximumDefaultDumpBytes": 2147483648,
+  "recorder": {
+    "sampleIntervalSeconds": 60,
+    "progressBucketPercent": 10,
+    "maximumCheckpoints": 64,
+    "maximumCheckpointFileBytes": 67108864,
+    "maximumCheckpointBytes": 268435456
+  }
 }

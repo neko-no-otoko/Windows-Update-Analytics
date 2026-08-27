@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:win11upgradediag:summary:1.1.0",
+  "$id": "urn:win11upgradediag:summary:2.0.0",
   "title": "Windows Update Analytics fact-only summary",
-  "description": "Stable fleet-ingestion contract for a finalized Win11UpgradeDiag v1.1 run.",
+  "description": "Stable fleet-ingestion contract for a finalized Win11UpgradeDiag v2.0 run.",
   "type": "object",
   "required": [
     "SchemaVersion",
@@ -16,6 +16,8 @@
     "Timestamps",
     "Sensitive",
     "Outcome",
+    "StatusModel",
+    "Recorder",
     "ExitCode",
     "Device",
     "SourceOs",
@@ -37,8 +39,8 @@
     "ReviewBundle"
   ],
   "properties": {
-    "SchemaVersion": { "const": 1 },
-    "SchemaSemanticVersion": { "const": "1.1.0" },
+    "SchemaVersion": { "const": 2 },
+    "SchemaSemanticVersion": { "const": "2.0.0" },
     "ToolVersion": { "type": "string", "minLength": 1 },
     "AnalysisMode": { "enum": ["FactOnly", "DeterministicLegacy"] },
     "RuleCatalogVersion": { "type": "string", "minLength": 1 },
@@ -72,7 +74,25 @@
     },
     "Sensitive": { "const": true },
     "Outcome": {
-      "enum": ["Ready", "Attention Required", "Blocked", "Upgrade Succeeded", "Rolled Back", "Failed", "Unknown"]
+      "enum": ["Monitoring Armed", "Target OS Present", "Upgrade In Progress", "Upgrade Succeeded", "Rolled Back", "Failed", "No Upgrade Outcome Observed", "Ready", "Attention Required", "Blocked"]
+    },
+    "StatusModel": {
+      "type": "object",
+      "required": ["CurrentOsState", "BuildTransition", "AttemptOutcome", "DeploymentSource", "OutcomeBanner", "TargetPresent", "WindowsUpdateEvidenceConfirmed", "ObservedBuilds"],
+      "properties": {
+        "CurrentOsState": { "enum": ["TargetPresent", "TargetNotPresent", "Unreadable"] },
+        "BuildTransition": { "enum": ["Observed", "NotObserved"] },
+        "AttemptOutcome": { "enum": ["Succeeded", "Failed", "RolledBack", "InProgress", "NotObserved"] },
+        "DeploymentSource": { "enum": ["WindowsUpdateConfirmed", "OtherConfirmed", "Unattributed"] },
+        "OutcomeBanner": { "type": "string" },
+        "TargetPresent": { "type": "boolean" },
+        "WindowsUpdateEvidenceConfirmed": { "type": "boolean" },
+        "ObservedBuilds": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "Recorder": {
+      "type": ["object", "null"]
     },
     "ExitCode": { "enum": [0, 10, 20, 30] },
     "Device": {

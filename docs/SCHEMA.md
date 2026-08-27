@@ -2,19 +2,21 @@
 
 ## Versioning policy
 
-The fleet schema keeps numeric compatibility version `1` and advances its additive semantic version to `1.1.0`. Consumers should ignore unknown properties and preserve `null` as distinct from empty or zero. The tool, target map, legacy rule catalog, and output schema are versioned independently.
+Version 2 advances the fleet schema to numeric version `2` and semantic version `2.0.0` because the outcome contract is intentionally split and persistent-recorder records are now first-class. Consumers should ignore unknown properties and preserve `null` as distinct from empty or zero. The tool, target map, legacy rule catalog, and output schema are versioned independently.
 
 ## Summary.json
 
 `Summary.json` remains the stable fleet-ingestion contract. Its machine-readable draft 2020-12 schema is `Data/Summary.schema.json`.
 
-Core v1.1 properties are:
+Core v2 properties are:
 
 | Property | Meaning |
 |---|---|
-| `AnalysisMode` | `FactOnly` for the v1.1 default engine. |
+| `AnalysisMode` | `FactOnly` for the v2 default engine. |
 | `Device`, `SourceOs`, `CurrentOs`, `TargetOs` | Normalized device and Windows identities. |
-| `Outcome` | Directly observable current outcome; `Unknown` when the evidence does not establish one. |
+| `Outcome` | Human-readable banner derived from the explicit status fields; never `Unknown`. |
+| `StatusModel` | Separate `CurrentOsState`, `BuildTransition`, `AttemptOutcome`, and `DeploymentSource` values. |
+| `Recorder` | Sampling window, state boundaries, and Delivery Optimization observation rollups. |
 | `Facts`, `FactCounts` | Direct records and rollups by fact type and scope. |
 | `Attempts`, `AttemptScope` | Setup candidates, exact gates, classifications, and validated/excluded counts. |
 | `ExcludedEvidence` | Candidate evidence prevented from entering upgrade conclusions and the exact reason. |
@@ -22,7 +24,16 @@ Core v1.1 properties are:
 | `ArtifactHashes`, `ReviewBundle` | Output metadata and compact-review-package hash. |
 | `PrimaryFinding`, `Findings`, `FindingCounts` | Compatibility fields retained for 1.x consumers. They are `null`/empty/zero in fact-only mode. |
 
-Valid outcomes remain `Ready`, `Attention Required`, `Blocked`, `Upgrade Succeeded`, `Rolled Back`, `Failed`, and `Unknown`. Fact-only mode normally emits only the latter four outcome states that can be established from current build, an owned rollback marker, or source-reported Windows Update history.
+V2 can emit `Monitoring Armed`, `Target OS Present`, `Upgrade In Progress`, `Upgrade Succeeded`, `Rolled Back`, `Failed`, or `No Upgrade Outcome Observed`. Compatibility values `Ready`, `Attention Required`, and `Blocked` remain accepted by the schema. A banner is not deployment provenance; use `StatusModel.DeploymentSource` for that question.
+
+The status dimensions are:
+
+```text
+CurrentOsState   = TargetPresent | TargetNotPresent | Unreadable
+BuildTransition  = Observed | NotObserved
+AttemptOutcome   = Succeeded | Failed | RolledBack | InProgress | NotObserved
+DeploymentSource = WindowsUpdateConfirmed | OtherConfirmed | Unattributed
+```
 
 ## Fact object
 
@@ -75,6 +86,10 @@ The provider-neutral review bundle contains:
 READ_ME_FIRST.md
 REVIEW_PROMPT.md
 Case.json
+RecorderSummary.json
+ProgressSamples.jsonl
+StateTransitions.jsonl
+Checkpoints.json
 Attempts.json
 Facts.jsonl
 Facts.csv
@@ -101,13 +116,15 @@ TimestampUtc, AttemptId, FactId, EventType, Code, Phase, Operation,
 Message, EvidenceReference
 ```
 
-Setup rows must originate in a validated Windows Update attempt. Windows Update history rows are retained as source-reported context and are not attached to a setup attempt merely because their timestamps are nearby.
+Setup rows must originate in a validated Windows Update attempt. Windows Update history rows are retained as source-reported context and are not attached to a setup attempt merely because their timestamps are nearby. Recorder boundary rows use event type `RecorderState`, remain context-only, and do not receive an attempt ID by temporal proximity.
 
 ## Findings.csv
 
 The file is retained for compatibility with v1.0 workflows. It contains only its header in fact-only mode. Consumers should migrate to `Facts.csv` or `ReviewBundle.zip/Facts.jsonl`.
 
 ## Inventory and integrity
+
+`ProgressSamples.jsonl` is append-only. Each valid line is an independent JSON object; a truncated final line is reported and ignored without losing earlier records. `StateTransitions.jsonl` contains signature boundaries. `Checkpoints.json` rolls up the native checkpoint manifests whose full files remain in `Evidence.zip`.
 
 `Inventory.json` contains baseline/current normalized snapshots and a transparent section-level diff. `Manifest.json` indexes raw evidence and finalized artifacts with paths, sizes, timestamps, SHA-256, source mappings, gaps, and archive verification. `Checksums.sha256` hashes the finalized top-level artifacts. The review bundle has its own internal `Manifest.sha256`.
 

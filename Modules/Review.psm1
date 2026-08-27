@@ -496,6 +496,76 @@ function Add-WudActiveDiagnosticFacts {
     }
 }
 
+function Get-WudUpgradeStatusModel {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        $Identity,
+        $FeatureHistory = @(),
+        $EligibleAttempts = @()
+    )
+    $display = [string](Get-WudReviewProperty $Identity 'DisplayVersion')
+    $build = 0
+    $buildReadable = [int]::TryParse([string](Get-WudReviewProperty $Identity 'CurrentBuild'), [ref]$build)
+    $targetPresent = $display -eq [string]$Context.TargetVersion -or ($buildReadable -and $build -ge [int]$Context.Target.buildFamily)
+    $currentState = if (-not $Identity -or (-not $display -and -not $buildReadable)) { 'Unreadable' } elseif ($targetPresent) { 'TargetPresent' } else { 'TargetNotPresent' }
+
+    $samples = @()
+    $samplePath = Join-Path $Context.RunPath 'Evidence\Recorder\ProgressSamples.jsonl'
+    if (Test-Path -LiteralPath $samplePath) {
+        try { $samples = @((Read-WudJsonLines -Path $samplePath).Records) }
+        catch { $samples = @() }
+    }
+    $observedBuilds = @($samples | ForEach-Object {
+        $os = Get-WudReviewProperty $_ 'Os'
+        [string](Get-WudReviewProperty $os 'Build')
+    } | Where-Object { $_ } | Select-Object -Unique)
+    $buildTransition = if ($observedBuilds.Count -gt 1) { 'Observed' } else { 'NotObserved' }
+    $baseline = $null
+    try {
+        $state = Read-WudJson -Path (Join-Path $Context.RunPath 'State\run-state.json')
+        $baseline = Get-WudReviewProperty $state 'BaselineIdentity'
+    }
+    catch { }
+    if ($baseline) {
+        $baselineBuild = 0
+        $baselineReadable = [int]::TryParse([string](Get-WudReviewProperty $baseline 'CurrentBuild'), [ref]$baselineBuild)
+        if ($baselineReadable -and $buildReadable -and $baselineBuild -ne $build) { $buildTransition = 'Observed' }
+    }
+
+    $featureRows = @($FeatureHistory)
+    $windowsUpdateConfirmed = @($EligibleAttempts).Count -gt 0 -or @($featureRows).Count -gt 0
+    $deploymentSource = if ($windowsUpdateConfirmed) { 'WindowsUpdateConfirmed' } else { 'Unattributed' }
+    $rollbackMarker = Test-Path -LiteralPath (Join-Path $Context.RunPath 'State\Markers\post-rollback.marker')
+    $failedHistory = @($featureRows | Where-Object { (Get-WudOperationResultLabel $_.ResultCode) -in @('Failed', 'Aborted') })
+    $lastRecorderState = if ($samples.Count -gt 0) { [string](Get-WudReviewProperty $samples[$samples.Count - 1] 'RecorderState') } else { $null }
+    $attemptOutcome = if ($rollbackMarker) { 'RolledBack' }
+        elseif ($targetPresent -and $buildTransition -eq 'Observed') { 'Succeeded' }
+        elseif ($failedHistory.Count -gt 0) { 'Failed' }
+        elseif ($lastRecorderState -in @('WindowsUpdateTransportObserved', 'DeliveryOptimizationTransferObserved', 'DownloadObservedComplete', 'SetupActive', 'SetupDownlevel', 'SetupSafeOS', 'SetupFirstBoot', 'SetupOOBE', 'RebootPending')) { 'InProgress' }
+        else { 'NotObserved' }
+    $outcome = switch ($attemptOutcome) {
+        'Succeeded' { 'Upgrade Succeeded' }
+        'RolledBack' { 'Rolled Back' }
+        'Failed' { 'Failed' }
+        'InProgress' { 'Upgrade In Progress' }
+        default {
+            if ($targetPresent) { 'Target OS Present' }
+            elseif ($Context.Mode -eq 'Preflight') { 'Monitoring Armed' }
+            else { 'No Upgrade Outcome Observed' }
+        }
+    }
+    return [pscustomobject][ordered]@{
+        CurrentOsState = $currentState
+        BuildTransition = $buildTransition
+        AttemptOutcome = $attemptOutcome
+        DeploymentSource = $deploymentSource
+        OutcomeBanner = $outcome
+        TargetPresent = $targetPresent
+        WindowsUpdateEvidenceConfirmed = $windowsUpdateConfirmed
+        ObservedBuilds = @($observedBuilds)
+    }
+}
+
 function Invoke-WudFactAnalysis {
     param([Parameter(Mandatory = $true)]$Context)
     Write-WudLog -Context $Context -Level INFO -Message 'Building direct facts and applying strict Windows Update evidence scope gates. No root-cause inference will be performed.'
@@ -594,8 +664,11 @@ function Invoke-WudFactAnalysis {
         if ([bool](Get-WudReviewProperty $process 'Succeeded' $false)) { continue }
         $name = [string](Get-WudReviewProperty $process 'Name' '<unnamed-process>')
         $value = [pscustomobject][ordered]@{
+            ExecutionStatus = Get-WudReviewProperty $process 'ExecutionStatus' 'UnknownStatus'
             ExitCode = Get-WudReviewProperty $process 'ExitCode'; ExitCodeHex = Get-WudReviewProperty $process 'ExitCodeHex'
-            TimedOut = Get-WudReviewProperty $process 'TimedOut'; Error = Get-WudReviewProperty $process 'Error'
+            ExitCodeAvailable = Get-WudReviewProperty $process 'ExitCodeAvailable'
+            TimedOut = Get-WudReviewProperty $process 'TimedOut'; Detail = Get-WudReviewProperty $process 'Detail'; Error = Get-WudReviewProperty $process 'ErrorDetail' (Get-WudReviewProperty $process 'Error')
+            ExpectedArtifacts = Get-WudReviewProperty $process 'ExpectedArtifacts' @()
         }
         $null = Add-WudReviewFact -Context $Context -FactType Observed -Category 'CollectorExecution' -Statement ("Collector process '{0}' did not report success." -f $name) -Value $value -TimestampUtc (Get-WudReviewProperty $process 'EndedUtc') -SourceRef ("{0}/Commands/{1}.result.json" -f $Context.PhaseLabel, ($name -replace '[^A-Za-z0-9._-]', '_')) -ScopeStatus ContextOnly
     }
@@ -606,25 +679,26 @@ function Invoke-WudFactAnalysis {
 
     Add-WudSetupDiagFacts -Context $Context -Attempts @($Context.Attempts)
 
+    if ($Context.Recorder) {
+        $null = Add-WudReviewFact -Context $Context -FactType Computed -Category 'PersistentRecorder' -Statement 'The recorder summarized its timestamped observations without assigning cause.' -Value $Context.Recorder -TimestampUtc (Get-WudReviewProperty $Context.Recorder 'LastSampleUtc') -SourceRef 'Recorder/ProgressSamples.jsonl' -ScopeStatus ContextOnly
+        foreach ($transition in @((Get-WudReviewProperty $Context.Recorder 'StateTransitions' @()))) {
+            $null = $Context.Timeline.Add([pscustomobject][ordered]@{
+                TimestampUtc = Get-WudReviewProperty $transition 'TimestampUtc'; AttemptId = $null; FactId = $null
+                EventType = 'RecorderState'; Code = $null; Phase = Get-WudReviewProperty $transition 'State'; Operation = $null
+                Message = ('Recorder state changed from {0} to {1}.' -f (Get-WudReviewProperty $transition 'PreviousState'), (Get-WudReviewProperty $transition 'State'))
+                EvidenceReference = Get-WudReviewProperty $transition 'EvidenceReference' 'Recorder/ProgressSamples.jsonl'
+            })
+        }
+    }
+
     $comparisonResult = @(Get-WudReviewInventoryDiff -Context $Context -CurrentInventory $currentInventory)
     $inventoryDiff = $comparisonResult[0]
     $baselineInventory = if ($comparisonResult.Count -gt 1) { $comparisonResult[1] } else { $null }
     $Context.Inventory = [ordered]@{ Baseline = $baselineInventory; Current = $currentInventory; Diff = $inventoryDiff }
 
-    $targetReached = $false
-    if ($identity) {
-        $display = [string](Get-WudReviewProperty $identity 'DisplayVersion')
-        $build = 0
-        $null = [int]::TryParse([string](Get-WudReviewProperty $identity 'CurrentBuild'), [ref]$build)
-        $targetReached = $display -eq [string]$Context.TargetVersion -or $build -ge [int]$Context.Target.buildFamily
-    }
     $eligibleAttempts = @($Context.Attempts | Where-Object IncludedForUpgradeReview)
-    $failedHistory = @($featureHistory | Where-Object { (Get-WudOperationResultLabel $_.ResultCode) -in @('Failed', 'Aborted') })
-    $rollbackMarker = Test-Path -LiteralPath (Join-Path $Context.RunPath 'State\Markers\post-rollback.marker')
-    if ($targetReached -and @($eligibleAttempts).Count -gt 0) { $Context.Outcome = 'Upgrade Succeeded' }
-    elseif ($rollbackMarker -and @($eligibleAttempts).Count -gt 0) { $Context.Outcome = 'Rolled Back' }
-    elseif (@($failedHistory).Count -gt 0 -and @($eligibleAttempts).Count -gt 0) { $Context.Outcome = 'Failed' }
-    else { $Context.Outcome = 'Unknown' }
+    $Context.StatusModel = Get-WudUpgradeStatusModel -Context $Context -Identity $identity -FeatureHistory $featureHistory -EligibleAttempts $eligibleAttempts
+    $Context.Outcome = $Context.StatusModel.OutcomeBanner
     $Context.PrimaryFinding = $null
     $Context.CompletedUtc = [DateTime]::UtcNow.ToString('o')
     $Context.ExitCode = if (-not $Context.CollectionComplete) { 30 } elseif ($Context.Outcome -in @('Failed', 'Rolled Back')) { 20 } else { 0 }
@@ -635,12 +709,14 @@ function Invoke-WudFactAnalysis {
         FeatureUpdateHistory = @($featureHistory)
         AllUpdateHistory = @($allUpdateHistory)
         InventoryDiff = $inventoryDiff
+        Recorder = $Context.Recorder
+        StatusModel = $Context.StatusModel
         ValidatedAttemptCount = @($eligibleAttempts).Count
         ExcludedAttemptCount = @($Context.Attempts | Where-Object { -not $_.IncludedForUpgradeReview }).Count
     }
     $analysis = [pscustomobject][ordered]@{
-        SchemaVersion = 2; SchemaSemanticVersion = '1.1.0'; ToolVersion = $Context.ToolVersion; RunId = $Context.RunId
-        AnalysisMode = 'FactOnly'; Outcome = $Context.Outcome; ExitCode = $Context.ExitCode
+        SchemaVersion = 3; SchemaSemanticVersion = '2.0.0'; ToolVersion = $Context.ToolVersion; RunId = $Context.RunId
+        AnalysisMode = 'FactOnly'; Outcome = $Context.Outcome; StatusModel = $Context.StatusModel; Recorder = $Context.Recorder; ExitCode = $Context.ExitCode
         Attempts = @($Context.Attempts); Facts = @($Context.Facts); Findings = @(); Timeline = @($Context.Timeline)
         ExcludedEvidence = @($Context.ExcludedEvidence); Inventory = $Context.Inventory
         StartedUtc = $Context.StartedUtc; CompletedUtc = $Context.CompletedUtc
@@ -691,6 +767,7 @@ function Export-WudReviewBundle {
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     $null = New-WudDirectory -Path $staging
     $excerptPath = New-WudDirectory -Path (Join-Path $staging 'Excerpts')
+    $recorderSummary = if ($Context.Recorder) { $Context.Recorder } else { [pscustomobject][ordered]@{ SampleCount = 0; FirstSampleUtc = $null; LastSampleUtc = $null; StatesObserved = @(); StateTransitions = @(); DeliveryOptimization = $null } }
 
     foreach ($fact in @($Context.Facts)) {
         if ([string]::IsNullOrWhiteSpace([string]$fact.Excerpt)) { continue }
@@ -702,8 +779,8 @@ function Export-WudReviewBundle {
     $current = Get-WudReviewProperty $Context.Inventory 'Current'
     $identity = Get-WudReviewProperty $current 'Identity'
     $case = [pscustomobject][ordered]@{
-        SchemaVersion = 1
-        SchemaSemanticVersion = '1.1.0'
+        SchemaVersion = 2
+        SchemaSemanticVersion = '2.0.0'
         ToolVersion = $Context.ToolVersion
         AnalysisMode = 'FactOnly'
         RunId = $Context.RunId
@@ -723,6 +800,8 @@ function Export-WudReviewBundle {
         }
         TargetOs = [pscustomobject][ordered]@{ DisplayVersion = $Context.TargetVersion; BuildFamily = $Context.Target.buildFamily }
         ObservedOutcome = $Context.Outcome
+        StatusModel = $Context.StatusModel
+        Recorder = $recorderSummary
         CollectionComplete = $Context.CollectionComplete
         ValidatedWindowsUpdateAttempts = @($Context.Attempts | Where-Object IncludedForUpgradeReview).Count
         ExcludedSetupCandidates = @($Context.Attempts | Where-Object { -not $_.IncludedForUpgradeReview }).Count
@@ -733,10 +812,19 @@ function Export-WudReviewBundle {
     Write-WudJsonAtomic -Path (Join-Path $staging 'Inventory.json') -InputObject $Context.Inventory -Depth 40
     Write-WudJsonAtomic -Path (Join-Path $staging 'InventoryDiff.json') -InputObject $Context.ReviewData.InventoryDiff -Depth 20
     Write-WudJsonAtomic -Path (Join-Path $staging 'CollectionCoverage.json') -InputObject ([pscustomobject]@{ Complete = $Context.CollectionComplete; Collectors = @($Context.CollectorRecords); Gaps = @($Context.CollectionGaps) }) -Depth 30
+    Write-WudJsonAtomic -Path (Join-Path $staging 'RecorderSummary.json') -InputObject $recorderSummary -Depth 30
     Write-WudJsonAtomic -Path (Join-Path $staging 'ExcludedEvidence.json') -InputObject @($Context.ExcludedEvidence) -Depth 30
     Write-WudJsonLines -Path (Join-Path $staging 'Facts.jsonl') -Records @($Context.Facts)
     Write-WudJsonLines -Path (Join-Path $staging 'Timeline.jsonl') -Records @($Context.Timeline)
     Write-WudJsonLines -Path (Join-Path $staging 'UpdateHistory.jsonl') -Records @($Context.ReviewData.AllUpdateHistory)
+    $recorderRoot = Join-Path $Context.RunPath 'Evidence\Recorder'
+    foreach ($name in @('ProgressSamples.jsonl', 'StateTransitions.jsonl')) {
+        $source = Join-Path $recorderRoot $name
+        if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $staging $name) -Force }
+        else { Write-WudText -Path (Join-Path $staging $name) -Text '' }
+    }
+    $checkpointManifests = @(Get-ChildItem -LiteralPath (Join-Path $recorderRoot 'Checkpoints') -File -Recurse -Filter 'checkpoint-manifest.json' -ErrorAction SilentlyContinue | ForEach-Object { Read-WudJson -Path $_.FullName })
+    Write-WudJsonAtomic -Path (Join-Path $staging 'Checkpoints.json') -InputObject @($checkpointManifests) -Depth 30
 
     $factRows = @($Context.Facts | ForEach-Object {
         [pscustomobject][ordered]@{
@@ -775,13 +863,13 @@ This archive is sensitive. It can contain device names, users, domains, paths, n
 - Imaging, general servicing, compatibility scan-only, and tool-generated evidence remain indexed but are excluded from upgrade conclusions.
 - This tool does not determine root cause. A human or external review utility must distinguish direct failure records, contributing conditions, coincidence, and cause.
 
-Start with `Case.json`, then `Attempts.json`, `Facts.jsonl`, `Timeline.jsonl`, and `CollectionCoverage.json`. Use `EvidenceIndex.jsonl` to resolve hashes and `Excerpts/` for bounded source text. Request `Evidence.zip` separately when full raw logs are necessary.
+Start with `Case.json`, `RecorderSummary.json`, `ProgressSamples.jsonl`, `Attempts.json`, `Facts.jsonl`, `Timeline.jsonl`, and `CollectionCoverage.json`. Recorder states are observations, not proof that a delay was caused by download, Setup, reboot, or user activity. Use `EvidenceIndex.jsonl` to resolve hashes and `Excerpts/` for bounded source text. Request `Evidence.zip` separately when full raw logs are necessary.
 '@
     Write-WudText -Path (Join-Path $staging 'READ_ME_FIRST.md') -Text $readMe
     $prompt = @'
 # Suggested external-review prompt
 
-Review this Windows feature-update evidence bundle. Treat `Facts.jsonl` as statements of record, not as proof of causation. Analyze only attempts in `Attempts.json` where `IncludedForUpgradeReview` is true. Explicitly ignore excluded imaging, scan-only, general-servicing, and tool-generated records when determining the upgrade sequence.
+Review this Windows feature-update evidence bundle. Treat `Facts.jsonl` and `ProgressSamples.jsonl` as statements of record, not as proof of causation. Analyze setup content only for attempts in `Attempts.json` where `IncludedForUpgradeReview` is true. Explicitly ignore excluded imaging, scan-only, general-servicing, and tool-generated records when determining the upgrade sequence. Recorder state changes may segment observed activity but do not prove why an interval was quiet.
 
 Report:
 1. The factual upgrade sequence, with evidence references.
@@ -807,7 +895,7 @@ Never state root cause without quoting the exact evidence reference that support
     $archive = [IO.Compression.ZipFile]::OpenRead($destination)
     try {
         $entryNames = @($archive.Entries | ForEach-Object FullName)
-        foreach ($required in @('READ_ME_FIRST.md', 'Case.json', 'Attempts.json', 'Facts.jsonl', 'Timeline.jsonl', 'EvidenceIndex.jsonl', 'Manifest.sha256')) {
+        foreach ($required in @('READ_ME_FIRST.md', 'Case.json', 'RecorderSummary.json', 'ProgressSamples.jsonl', 'StateTransitions.jsonl', 'Checkpoints.json', 'Attempts.json', 'Facts.jsonl', 'Timeline.jsonl', 'EvidenceIndex.jsonl', 'Manifest.sha256')) {
             if ($entryNames -notcontains $required) { throw "Review bundle is missing required entry '$required'." }
         }
         $entryMap = @{}
@@ -841,4 +929,4 @@ Never state root cause without quoting the exact evidence reference that support
     return $Context.ReviewBundle
 }
 
-Export-ModuleMember -Function @('Invoke-WudFactAnalysis', 'Export-WudReviewBundle', 'Get-WudSetupLogProfile', 'Set-WudAttemptScope')
+Export-ModuleMember -Function @('Invoke-WudFactAnalysis', 'Export-WudReviewBundle', 'Get-WudSetupLogProfile', 'Set-WudAttemptScope', 'Get-WudUpgradeStatusModel')

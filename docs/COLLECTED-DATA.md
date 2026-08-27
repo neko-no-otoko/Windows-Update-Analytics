@@ -1,6 +1,6 @@
 # Collected data and factual output
 
-Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes direct records, and records what was unavailable. Version 1.1 deliberately stops before root-cause judgment. Availability varies by Windows edition, management stack, setup stage, retention, localization, and permissions.
+Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes direct records, and records what was unavailable. Version 2.0 adds a persistent observation window while deliberately stopping before root-cause judgment. Availability varies by Windows edition, management stack, setup stage, retention, localization, and permissions.
 
 ## Collection matrix
 
@@ -12,7 +12,8 @@ Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes 
 | Software | Uninstall registry, AppX/provisioned apps, capabilities, features, languages, profiles, services, security products, filters | Installed component inventory and pre/post differences |
 | Drivers/devices | PnP state/problem codes, signed drivers, driver store, `pnputil`, SetupAPI | Driver/device state and exact source-reported setup/device records |
 | Update ownership/policy | WUA history, Update ID/revision, client application, service/server selection, WUfB/WSUS policy, GPResult, MDM, ConfigMgr, Intune | Direct update owner/provenance, policy values, and feature-update result records |
-| Transport | Windows Update ETL/readable log, USO, Delivery Optimization, BITS, proxy, DNS/IP/routes, time, bounded endpoint tests | Scan/download/install records, endpoints, status codes, and reachability at collection time |
+| Transport | Windows Update ETL/readable log, USO, BITS, proxy, DNS/IP/routes, time, bounded endpoint tests | Scan/download/install records, endpoints, status codes, and reachability at collection time |
+| Persistent recorder | Build/boot/Setup state every 60 seconds; `SetupProgress`; Setup processes; pending reboot; DO job size/progress/status/caller/URL; HTTP/peer/Connected Cache bytes; peer and performance snapshots | First/last observation bounds, progress percentages, observed byte deltas, latest source counters, throughput, cache share, reboot gaps, and state changes. It does not claim why an unobserved interval occurred |
 | Servicing | Update history, packages/hotfixes, CBS/DISM, pending markers, DISM ScanHealth, SFC verify-only | Package/current-health results kept as servicing or tool-generated context unless directly part of a validated upgrade source |
 | Setup/rollback | `$WINDOWS.~BT`, Rollback, Windows.old, SetupCopyLogs, MoSetup/BlueBox, migration files, setup dumps, scoped SetupDiag | Attempt windows, source/target builds, exact failure lines/codes, deterministic phase/operation decodes, and inclusion gates |
 | Events/crashes | EVTX exports, normalized event records, reliability, WER, setup/minidumps, WHEA/disk/NTFS/BugCheck/Kernel-Power | Direct event/crash records. They are not attached to an upgrade attempt based on time alone |
@@ -27,6 +28,15 @@ Each phase captures raw logs before running DISM, SFC, Compatibility Appraiser, 
 - SFC can still write to the system CBS log; because CBS was copied first, that new entry is not part of the same phase's passive snapshot.
 - A later phase may observe an earlier diagnostic record, but CBS/DISM sources remain `GeneralWindowsServicing` or `ToolGenerated`, never upgrade evidence by time alone.
 - SetupDiag is restricted to the newest copied feature-upgrade-style directory and never receives `Windows\Panther`, `Commands`, `CurrentDiagnostics`, or media-scan paths. Its result is emitted only when its exact input attempt later passes all Windows Update gates.
+
+## Persistent sampling and checkpoint boundary
+
+- The recorder writes one append-only JSON object per sample and flushes it before sleeping. A torn final write does not invalidate prior lines.
+- Delivery Optimization status and performance are sampled every interval. Configuration and monthly snapshots are captured at initial/final boundaries to limit file growth. `Get-DeliveryOptimizationLog` is never called with `-Flush` during active monitoring.
+- Generic Delivery Optimization jobs are labeled transport context. A Windows Update caller or Microsoft update URL can establish Windows Update transport ownership, but it still cannot prove that the bytes belong to the 25H2 feature update.
+- State, boot identity, build, or 10-percent Setup progress bucket changes create a checkpoint. Checkpoints copy bounded native files and export native EVTX without converting them.
+- Downlevel, SafeOS, FirstBoot, and OOBE labels require a recent Setup marker from a file modified within the armed run window plus current Setup activity. Historical imaging text alone cannot activate a phase.
+- Final collection stops the recorder first, appends an explicit final boundary, then performs the heavy passive-first collection.
 
 ## Windows Update attempt gates
 
@@ -51,6 +61,11 @@ dism.exe /Online /Cleanup-Image /ScanHealth /LogPath:<run-owned-path>
 sfc.exe /verifyonly
 Get-WindowsUpdateLog
 Get-DeliveryOptimizationLog
+Get-DeliveryOptimizationStatus
+Get-DeliveryOptimizationStatus -PeerInfo
+Get-DeliveryOptimizationPerfSnap
+Get-DeliveryOptimizationPerfSnapThisMonth
+Get-DOConfig -Verbose
 SetupDiag.exe /NoTel /LogsPath <scoped-upgrade-source> ...
 setup.exe /auto upgrade /compat scanonly ...
 ```

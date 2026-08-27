@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.0 — 2026-08-26
+
+- Added a persistent SYSTEM progress recorder with 60-second append-only JSONL sampling, restart-on-failure behavior, cross-reboot continuity, expiry, and owned cleanup.
+- Added state/build/boot/Setup-progress boundary detection and timestamped native checkpoints with per-source copy/export status, hashes, and capacity limits.
+- Added first-class Delivery Optimization status, peer, current/month performance, configuration, progress percentage, source-byte, cache-share, and throughput records. Provider failures are explicit instead of silently empty.
+- Preserved native Panther, rollback, Windows Update ETL, USO, Delivery Optimization, servicing, event, and crash evidence before readable conversion or active diagnostics.
+- Split status into current target presence, observed build transition, attempt outcome, and deployment provenance. A current 25H2 device without retained provenance now reports `Target OS Present`, not `Unknown`.
+- Added source-reported Setup phase segmentation for recent run-window Downlevel, SafeOS, FirstBoot, and OOBE markers; historical imaging logs cannot activate a phase by themselves.
+- Replaced ambiguous process warnings with explicit `Succeeded`, `ExitedNonzero`, `TimedOut`, `StartFailed`, `ExitCodeUnavailable`, and `ArtifactCapturedDespiteProcessUncertainty` results, including PID, deepest error, and artifact change evidence.
+- Added `RecorderSummary.json`, `ProgressSamples.jsonl`, `StateTransitions.jsonl`, and `Checkpoints.json` to final output and the external-review data model.
+- Advanced `Summary.json` to numeric schema `2` and semantic schema `2.0.0`, while keeping the fact-only and strict Windows Update scope model.
+- Added v2 fixture tests for recorder state sequencing, JSONL truncation recovery, Delivery Optimization arithmetic, target/provenance separation, checkpoint creation, and process accounting.
+
 ## 1.1.2 — 2026-08-26
 
 - Hardened `Evidence.zip` and `ReviewBundle.zip` source reads for Windows PowerShell 5.1 by retrying local and UNC files with Windows extended-length paths.

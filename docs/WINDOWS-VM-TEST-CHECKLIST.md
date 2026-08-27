@@ -1,6 +1,6 @@
 # Windows VM acceptance checklist
 
-Version 1.1 acceptance must validate the fact-only engine and contamination boundary; v1.0 causal-rule expectations are retained only as regression fixtures and are not the default runtime behavior.
+Version 2.0 acceptance must validate the persistent recorder, fact-only engine, contamination boundary, and explicit outcome/provenance model; v1.0 causal-rule expectations are retained only as regression fixtures and are not the default runtime behavior.
 
 Fixture and parser tests are necessary but not sufficient. Complete this checklist on isolated Windows VMs before expanding beyond a controlled pilot. Record the bundle SHA-256, tool version, VM snapshot, Windows edition/language/build/UBR, architecture, update source, security agents, and observed runtime for every case.
 
@@ -35,11 +35,11 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 - [ ] ConfigMgr/media feature upgrades with an explicit non-Windows-Update owner remain `NonWindowsUpdateFeatureUpgrade`.
 - [ ] Ambiguous Setup logs remain `UnclassifiedSetupEvidence` rather than being promoted by timestamp proximity.
 
-- [ ] Clean preflight produces complete factual coverage, outcome `Unknown`, and exit `0` without claiming readiness.
+- [ ] Clean preflight produces complete factual coverage, outcome `Monitoring Armed`, and exit `0` without claiming readiness.
 - [ ] Media compatibility `0xC1900210` is retained as a source-reported scan-only fact and never starts installation.
 - [ ] Application, disk-space, safeguard, policy, connectivity, servicing, driver, migration, and crash records preserve exact values/codes/evidence without asserting cause.
 - [ ] `0xC1900101 - 0x20017` produces an observed failure line plus a decoded SafeOS/Boot fact, but no inferred driver name.
-- [ ] Successful 25H2 current build produces `Upgrade Succeeded` while old/excluded records remain visible but out of scope.
+- [ ] A transition observed from the preflight build to 25H2 produces `Upgrade Succeeded`; a freshly inspected 25H2 device with no observed transition produces `Target OS Present`, never `Unknown`.
 - [ ] An owned rollback marker plus a validated Windows Update attempt produces `Rolled Back` and exit `20`.
 - [ ] Several setup candidates remain independently hashed/classified; none is merged or promoted by proximity alone.
 - [ ] Missing Windows.old or cleaned Panther data becomes an explicit coverage limitation.
@@ -50,6 +50,11 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 - [ ] A SYSTEM resume uses the exact same saved Public Documents run folder as its preflight pass.
 - [ ] An explicit local `-OutputPath` overrides the Public Documents default, while an older armed run retains its previously saved path.
 - [ ] Preflight copies runtime/state to ProgramData and applies the expected restricted ACL.
+- [ ] `Recorder-<RunId>` starts immediately, samples at the configured 60-second interval, and restarts after task/process failure.
+- [ ] Each JSONL sample is independently parseable; a deliberately truncated final line is reported without losing prior records.
+- [ ] State/build/boot/10-percent-progress changes create bounded native checkpoints and unchanged samples do not create duplicate checkpoints.
+- [ ] DO status, peers, current/month performance, configuration, HTTP/peer/Connected Cache counters, progress, caller, and source URL are present or carry an explicit provider failure/unavailable state.
+- [ ] Unrelated Delivery Optimization traffic is not promoted to a 25H2 download; Windows Update transport ownership remains distinct from feature-update attempt validation.
 - [ ] SYSTEM startup task runs after success and after rollback.
 - [ ] Three-minute delayed resume does not collect while Setup is still active.
 - [ ] An ordinary reboot without a target-build transition, hook marker, or newer Setup evidence does not finalize the run.
@@ -99,17 +104,17 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 
 - [ ] `ReviewBundle.zip` reopens and contains all required JSONL/CSV, scope, coverage, excerpt, prompt, and hash-manifest files.
 - [ ] The fact-only HTML contains no primary-cause ranking, confidence label, or executable recommendation.
-- [ ] `Findings.csv` is header-only and `Facts.csv` contains the v1.1 records.
+- [ ] `Findings.csv` is header-only and `Facts.csv` contains the v2 records.
 - [ ] Every fact evidence locator resolves to an indexed source or an explicitly recorded external/original source path.
 
-- [ ] All v1.1 final artifacts exist and are nonempty when applicable.
+- [ ] All v2 final artifacts exist and are nonempty when applicable, including recorder summary, progress JSONL, state transitions, and checkpoints.
 - [ ] `Evidence.zip` reopens and all archived hashes match the manifest.
 - [ ] A staged evidence file with an absolute path longer than 260 characters is hashed and included in `Evidence.zip` under Windows PowerShell 5.1.
 - [ ] A broken or external reparse point is indexed as `ArchiveReparsePointSkipped`, is not followed, and creates no empty ZIP entry.
 - [ ] A regular file removed between evidence inventory and archive creation is recorded as `ArchiveSourceMissing` and creates no empty ZIP entry.
 - [ ] `Checksums.sha256` validates after local and UNC copies.
 - [ ] Every fact has an indexed evidence reference or an explicitly documented original-source locator.
-- [ ] `Summary.json` reports numeric schema `1` and semantic schema `1.1.0`, and round-trips through the fleet ingestion parser.
+- [ ] `Summary.json` reports numeric schema `2` and semantic schema `2.0.0`, and round-trips through the fleet ingestion parser.
 - [ ] CSV opens in Excel without formula execution from collected values.
 - [ ] HTML contains no remote asset requests and satisfies its CSP.
 - [ ] Collected HTML/script-like text is escaped and cannot execute.

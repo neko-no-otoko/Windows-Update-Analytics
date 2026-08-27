@@ -1,5 +1,19 @@
 Set-StrictMode -Version 2.0
 
+function Invoke-WudOptionalProvider {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][string]$Collector,
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
+    )
+    try { return @(& $ScriptBlock) }
+    catch {
+        $null = Add-WudCollectionGap -Context $Context -Collector $Collector -Source $Source -Status 'ProviderFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_)
+        return @()
+    }
+}
+
 function ConvertTo-WudCimRecord {
     param($InputObject, [string[]]$Properties)
     if ($null -eq $InputObject) { return $null }
@@ -173,26 +187,22 @@ function Invoke-WudHardwareCollector {
     $logicalDisks = Get-WudCimRecords Win32_LogicalDisk -Properties @('DeviceID', 'DriveType', 'FileSystem', 'VolumeName', 'Size', 'FreeSpace', 'Status')
     $partitions = Get-WudCimRecords Win32_DiskPartition -Properties @('DeviceID', 'DiskIndex', 'Index', 'Type', 'Size', 'StartingOffset', 'BootPartition', 'PrimaryPartition')
     $battery = Get-WudCimRecords Win32_Battery -Properties @('Name', 'BatteryStatus', 'EstimatedChargeRemaining', 'EstimatedRunTime', 'Status')
-    $volumes = @()
-    try { $volumes = @(Get-Volume -ErrorAction Stop | Select-Object DriveLetter, FileSystemLabel, FileSystemType, HealthStatus, OperationalStatus, Size, SizeRemaining, Path) } catch { }
-    $storagePartitions = @()
-    try { $storagePartitions = @(Get-Partition -ErrorAction Stop | Select-Object DiskNumber, PartitionNumber, DriveLetter, Type, GptType, MbrType, Size, Offset, IsSystem, IsBoot, IsActive, IsHidden, IsReadOnly, IsOffline, Guid, AccessPaths) } catch { }
-    $storageDisks = @()
-    try { $storageDisks = @(Get-Disk -ErrorAction Stop | Select-Object Number, FriendlyName, SerialNumber, Manufacturer, Model, BusType, PartitionStyle, OperationalStatus, HealthStatus, IsSystem, IsBoot, IsOffline, IsReadOnly, Size, AllocatedSize, LargestFreeExtent, NumberOfPartitions, FirmwareVersion) } catch { }
-    $physical = @()
-    try { $physical = @(Get-PhysicalDisk -ErrorAction Stop | Select-Object FriendlyName, SerialNumber, MediaType, BusType, HealthStatus, OperationalStatus, Size, FirmwareVersion) } catch { }
+    $volumes = @(Invoke-WudOptionalProvider $Context 'hardware' 'Get-Volume' { Get-Volume -ErrorAction Stop | Select-Object DriveLetter, FileSystemLabel, FileSystemType, HealthStatus, OperationalStatus, Size, SizeRemaining, Path })
+    $storagePartitions = @(Invoke-WudOptionalProvider $Context 'hardware' 'Get-Partition' { Get-Partition -ErrorAction Stop | Select-Object DiskNumber, PartitionNumber, DriveLetter, Type, GptType, MbrType, Size, Offset, IsSystem, IsBoot, IsActive, IsHidden, IsReadOnly, IsOffline, Guid, AccessPaths })
+    $storageDisks = @(Invoke-WudOptionalProvider $Context 'hardware' 'Get-Disk' { Get-Disk -ErrorAction Stop | Select-Object Number, FriendlyName, SerialNumber, Manufacturer, Model, BusType, PartitionStyle, OperationalStatus, HealthStatus, IsSystem, IsBoot, IsOffline, IsReadOnly, Size, AllocatedSize, LargestFreeExtent, NumberOfPartitions, FirmwareVersion })
+    $physical = @(Invoke-WudOptionalProvider $Context 'hardware' 'Get-PhysicalDisk' { Get-PhysicalDisk -ErrorAction Stop | Select-Object FriendlyName, SerialNumber, MediaType, BusType, HealthStatus, OperationalStatus, Size, FirmwareVersion })
     $reliability = @()
     try {
         foreach ($disk in @(Get-PhysicalDisk -ErrorAction Stop)) {
-            try { $reliability += @($disk | Get-StorageReliabilityCounter | Select-Object *) } catch { }
+            try { $reliability += @($disk | Get-StorageReliabilityCounter -ErrorAction Stop | Select-Object *) }
+            catch { $null = Add-WudCollectionGap -Context $Context -Collector 'hardware' -Source ('Get-StorageReliabilityCounter:' + [string]$disk.FriendlyName) -Status 'ProviderFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_) }
         }
     }
-    catch { }
+    catch { $null = Add-WudCollectionGap -Context $Context -Collector 'hardware' -Source 'Get-PhysicalDisk reliability enumeration' -Status 'ProviderFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_) }
     $tpm = $null
     try { $tpm = Get-Tpm -ErrorAction Stop | Select-Object TpmPresent, TpmReady, TpmEnabled, TpmActivated, TpmOwned, ManufacturerIdTxt, ManufacturerVersion, ManagedAuthLevel, AutoProvisioning }
     catch { $tpm = [pscustomobject]@{ Error = $_.Exception.Message } }
-    $tpmWmi = @()
-    try { $tpmWmi = @(Get-CimInstance -Namespace 'root\CIMV2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop | Select-Object IsActivated_InitialValue, IsEnabled_InitialValue, IsOwned_InitialValue, ManufacturerId, ManufacturerIdTxt, ManufacturerVersion, PhysicalPresenceVersionInfo, SpecVersion) } catch { }
+    $tpmWmi = @(Invoke-WudOptionalProvider $Context 'hardware' 'Win32_Tpm' { Get-CimInstance -Namespace 'root\CIMV2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop | Select-Object IsActivated_InitialValue, IsEnabled_InitialValue, IsOwned_InitialValue, ManufacturerId, ManufacturerIdTxt, ManufacturerVersion, PhysicalPresenceVersionInfo, SpecVersion })
     $secureBoot = $null
     try { $secureBoot = Confirm-SecureBootUEFI -ErrorAction Stop }
     catch { $secureBoot = "Unavailable: $($_.Exception.Message)" }
@@ -224,10 +234,10 @@ function Invoke-WudHardwareCollector {
         @{ File = 'mountvol.exe'; Name = 'mountvol-list'; Args = @() },
         @{ File = 'powercfg.exe'; Name = 'powercfg-active-scheme'; Args = @('/getactivescheme') },
         @{ File = 'powercfg.exe'; Name = 'powercfg-available-sleep-states'; Args = @('/a') },
-        @{ File = 'dxdiag.exe'; Name = 'dxdiag'; Args = @('/whql:off', '/t', (Join-Path $path 'dxdiag.txt')) },
-        @{ File = 'msinfo32.exe'; Name = 'msinfo32'; Args = @('/report', (Join-Path $path 'msinfo32.txt')) }
+        @{ File = 'dxdiag.exe'; Name = 'dxdiag'; Args = @('/whql:off', '/t', (Join-Path $path 'dxdiag.txt')); Expected = @((Join-Path $path 'dxdiag.txt')) },
+        @{ File = 'msinfo32.exe'; Name = 'msinfo32'; Args = @('/report', (Join-Path $path 'msinfo32.txt')); Expected = @((Join-Path $path 'msinfo32.txt')) }
     )) {
-        $null = Invoke-WudProcess -Context $Context -FilePath $command.File -ArgumentList $command.Args -Name $command.Name -TimeoutSeconds 300
+        $null = Invoke-WudProcess -Context $Context -FilePath $command.File -ArgumentList $command.Args -Name $command.Name -TimeoutSeconds 300 -ExpectedArtifacts @(Get-WudObjectPropertyValue $command 'Expected' @())
     }
 }
 
@@ -240,17 +250,17 @@ function Invoke-WudSoftwareCollector {
     $features = @()
     $capabilities = @()
     $languages = @()
-    try { $appx = @(Get-AppxPackage -AllUsers -ErrorAction Stop | Select-Object Name, PackageFullName, PackageFamilyName, Version, Architecture, Publisher, SignatureKind, Status, UserSid) } catch { }
-    try { $provisioned = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop | Select-Object DisplayName, PackageName, Version, Architecture, ResourceId) } catch { }
-    try { $features = @(Get-WindowsOptionalFeature -Online -ErrorAction Stop | Select-Object FeatureName, State, RestartRequired) } catch { }
-    try { $capabilities = @(Get-WindowsCapability -Online -ErrorAction Stop | Select-Object Name, State, DisplayName, Description) } catch { }
-    try { $languages = @(Get-WinUserLanguageList -ErrorAction Stop | Select-Object LanguageTag, Autonym, EnglishName, LocalizedName, ScriptName, InputMethodTips, Spellchecking, Handwriting) } catch { }
+    $appx = @(Invoke-WudOptionalProvider $Context 'software' 'Get-AppxPackage -AllUsers' { Get-AppxPackage -AllUsers -ErrorAction Stop | Select-Object Name, PackageFullName, PackageFamilyName, Version, Architecture, Publisher, SignatureKind, Status, UserSid })
+    $provisioned = @(Invoke-WudOptionalProvider $Context 'software' 'Get-AppxProvisionedPackage -Online' { Get-AppxProvisionedPackage -Online -ErrorAction Stop | Select-Object DisplayName, PackageName, Version, Architecture, ResourceId })
+    $features = @(Invoke-WudOptionalProvider $Context 'software' 'Get-WindowsOptionalFeature -Online' { Get-WindowsOptionalFeature -Online -ErrorAction Stop | Select-Object FeatureName, State, RestartRequired })
+    $capabilities = @(Invoke-WudOptionalProvider $Context 'software' 'Get-WindowsCapability -Online' { Get-WindowsCapability -Online -ErrorAction Stop | Select-Object Name, State, DisplayName, Description })
+    $languages = @(Invoke-WudOptionalProvider $Context 'software' 'Get-WinUserLanguageList' { Get-WinUserLanguageList -ErrorAction Stop | Select-Object LanguageTag, Autonym, EnglishName, LocalizedName, ScriptName, InputMethodTips, Spellchecking, Handwriting })
     $profiles = Get-WudCimRecords Win32_UserProfile -Properties @('SID', 'LocalPath', 'Loaded', 'Special', 'RoamingConfigured', 'RoamingPath', 'LastUseTime', 'Status')
     $services = Get-WudCimRecords Win32_Service -Properties @('Name', 'DisplayName', 'State', 'StartMode', 'PathName', 'StartName', 'ServiceType', 'ExitCode', 'ProcessId')
     $antivirus = @()
-    try { $antivirus = @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop | Select-Object displayName, pathToSignedProductExe, pathToSignedReportingExe, productState, timestamp) } catch { }
+    $antivirus = @(Invoke-WudOptionalProvider $Context 'software' 'SecurityCenter2 AntiVirusProduct' { Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop | Select-Object displayName, pathToSignedProductExe, pathToSignedReportingExe, productState, timestamp })
     $processes = @()
-    try { $processes = @(Get-Process -ErrorAction Stop | Select-Object Name, Id, Path, Company, ProductVersion, StartTime) } catch { }
+    $processes = @(Invoke-WudOptionalProvider $Context 'software' 'Get-Process' { Get-Process -ErrorAction Stop | Select-Object Name, Id, Path, Company, ProductVersion, StartTime })
     $software = [pscustomobject][ordered]@{
         Applications      = $applications
         AppxPackages      = $appx
@@ -274,7 +284,7 @@ function Invoke-WudDriverCollector {
     $signedDrivers = Get-WudCimRecords Win32_PnPSignedDriver -Properties @('DeviceName', 'DeviceID', 'DeviceClass', 'Manufacturer', 'DriverProviderName', 'DriverVersion', 'DriverDate', 'InfName', 'IsSigned', 'Signer', 'Started', 'StartMode')
     $devices = Get-WudCimRecords Win32_PnPEntity -Properties @('Name', 'DeviceID', 'PNPClass', 'Manufacturer', 'Service', 'Status', 'ConfigManagerErrorCode', 'Present')
     $pnp = @()
-    try { $pnp = @(Get-PnpDevice -PresentOnly:$false -ErrorAction Stop | Select-Object Status, Class, FriendlyName, InstanceId, Problem, Present) } catch { }
+    $pnp = @(Invoke-WudOptionalProvider $Context 'drivers' 'Get-PnpDevice' { Get-PnpDevice -PresentOnly:$false -ErrorAction Stop | Select-Object Status, Class, FriendlyName, InstanceId, Problem, Present })
     $drivers = [pscustomobject][ordered]@{ SignedDrivers = $signedDrivers; Devices = $devices; PnpDevices = $pnp }
     Write-WudJsonAtomic -Path (Join-Path $path 'drivers.json') -InputObject $drivers -Depth 20
     $Context.Inventory['Drivers'] = $drivers
@@ -339,8 +349,7 @@ function Invoke-WudManagementCollector {
         }
         catch { }
     }
-    $bitsJobs = @()
-    try { $bitsJobs = @(Get-BitsTransfer -AllUsers -ErrorAction Stop | Select-Object DisplayName, Description, JobState, JobId, OwnerAccount, TransferType, CreationTime, ModificationTime, BytesTotal, BytesTransferred, ErrorDescription) } catch { }
+    $bitsJobs = @(Invoke-WudOptionalProvider $Context 'management' 'Get-BitsTransfer -AllUsers' { Get-BitsTransfer -AllUsers -ErrorAction Stop | Select-Object DisplayName, Description, JobState, JobId, OwnerAccount, TransferType, CreationTime, ModificationTime, BytesTotal, BytesTransferred, ErrorDescription })
     $connectivity = @()
     $configuredUpdateEndpoints = New-Object Collections.ArrayList
     try {
@@ -368,8 +377,8 @@ function Invoke-WudManagementCollector {
     $networkBindings = @()
     $networkConfiguration = @()
     $vpnConnections = @()
-    try { $networkAdapters = @(Get-NetAdapter -IncludeHidden -ErrorAction Stop | Select-Object Name, InterfaceDescription, InterfaceIndex, Status, MacAddress, LinkSpeed, MediaType, PhysicalMediaType, DriverInformation, DriverFileName, DriverVersion) } catch { }
-    try { $networkBindings = @(Get-NetAdapterBinding -AllBindings -ErrorAction Stop | Select-Object Name, DisplayName, ComponentID, Enabled) } catch { }
+    $networkAdapters = @(Invoke-WudOptionalProvider $Context 'management' 'Get-NetAdapter' { Get-NetAdapter -IncludeHidden -ErrorAction Stop | Select-Object Name, InterfaceDescription, InterfaceIndex, Status, MacAddress, LinkSpeed, MediaType, PhysicalMediaType, DriverInformation, DriverFileName, DriverVersion })
+    $networkBindings = @(Invoke-WudOptionalProvider $Context 'management' 'Get-NetAdapterBinding' { Get-NetAdapterBinding -AllBindings -ErrorAction Stop | Select-Object Name, DisplayName, ComponentID, Enabled })
     try {
         $networkConfiguration = @(Get-NetIPConfiguration -Detailed -ErrorAction Stop | ForEach-Object {
             [pscustomobject][ordered]@{
@@ -381,8 +390,8 @@ function Invoke-WudManagementCollector {
             }
         })
     }
-    catch { }
-    try { $vpnConnections = @(Get-VpnConnection -AllUserConnection -ErrorAction Stop | Select-Object Name, ServerAddress, TunnelType, AuthenticationMethod, EncryptionLevel, SplitTunneling, ConnectionStatus) } catch { }
+    catch { $null = Add-WudCollectionGap -Context $Context -Collector 'management' -Source 'Get-NetIPConfiguration -Detailed' -Status 'ProviderFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_) }
+    $vpnConnections = @(Invoke-WudOptionalProvider $Context 'management' 'Get-VpnConnection -AllUserConnection' { Get-VpnConnection -AllUserConnection -ErrorAction Stop | Select-Object Name, ServerAddress, TunnelType, AuthenticationMethod, EncryptionLevel, SplitTunneling, ConnectionStatus })
     $configMgrClient = $null
     try { $configMgrClient = Get-CimInstance -Namespace 'root\ccm' -ClassName SMS_Client -ErrorAction Stop | Select-Object ClientVersion, ClientType, EnableAutoAssignment, AllowLocalAdminOverride }
     catch { }
@@ -402,22 +411,23 @@ function Invoke-WudManagementCollector {
     Write-WudJsonAtomic -Path (Join-Path $path 'management-summary.json') -InputObject $policySummary
     $Context.Inventory['Management'] = $policySummary
     foreach ($command in @(
-        @{ File = 'gpresult.exe'; Name = 'gpresult'; Args = @('/x', (Join-Path $path 'gpresult.xml'), '/f') },
+        @{ File = 'gpresult.exe'; Name = 'gpresult'; Args = @('/x', (Join-Path $path 'gpresult.xml'), '/f'); Expected = @((Join-Path $path 'gpresult.xml')) },
         @{ File = 'dsregcmd.exe'; Name = 'dsregcmd-status'; Args = @('/status') },
         @{ File = 'netsh.exe'; Name = 'winhttp-proxy'; Args = @('winhttp', 'show', 'proxy') },
         @{ File = 'ipconfig.exe'; Name = 'ipconfig-all'; Args = @('/all') },
         @{ File = 'route.exe'; Name = 'route-print'; Args = @('print') },
         @{ File = 'w32tm.exe'; Name = 'time-status'; Args = @('/query', '/status', '/verbose') }
     )) {
-        $null = Invoke-WudProcess -Context $Context -FilePath $command.File -ArgumentList $command.Args -Name $command.Name -TimeoutSeconds 600
+        $null = Invoke-WudProcess -Context $Context -FilePath $command.File -ArgumentList $command.Args -Name $command.Name -TimeoutSeconds 600 -ExpectedArtifacts @(Get-WudObjectPropertyValue $command 'Expected' @())
     }
     if (Test-Path (Join-Path $env:SystemRoot 'System32\mdmdiagnosticstool.exe')) {
         $mdmZip = Join-Path $path 'MDMDiagnostics.zip'
-        $null = Invoke-WudProcess -Context $Context -FilePath 'mdmdiagnosticstool.exe' -ArgumentList @('-area', 'DeviceEnrollment;DeviceProvisioning', '-zip', $mdmZip) -Name 'mdm-diagnostics' -TimeoutSeconds 1200
+        $null = Invoke-WudProcess -Context $Context -FilePath 'mdmdiagnosticstool.exe' -ArgumentList @('-area', 'DeviceEnrollment;DeviceProvisioning', '-zip', $mdmZip) -Name 'mdm-diagnostics' -TimeoutSeconds 1200 -ExpectedArtifacts @($mdmZip)
     }
 }
 
 function Get-WudUpdateHistory {
+    param($Context)
     $records = New-Object Collections.ArrayList
     try {
         $session = New-Object -ComObject Microsoft.Update.Session
@@ -448,7 +458,9 @@ function Get-WudUpdateHistory {
             }
         }
     }
-    catch { }
+    catch {
+        if ($Context) { $null = Add-WudCollectionGap -Context $Context -Collector 'servicing' -Source 'Microsoft.Update.Session history' -Status 'ProviderFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_) }
+    }
     return @($records)
 }
 
@@ -456,11 +468,11 @@ function Invoke-WudServicingCollector {
     param($Context)
     $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Servicing')
     $pending = Get-WudPendingRebootState
-    $history = Get-WudUpdateHistory
+    $history = Get-WudUpdateHistory -Context $Context
     $hotfixes = @()
     $packages = @()
-    try { $hotfixes = @(Get-HotFix -ErrorAction Stop | Select-Object HotFixID, Description, InstalledBy, InstalledOn, Caption) } catch { }
-    try { $packages = @(Get-WindowsPackage -Online -ErrorAction Stop | Select-Object PackageName, PackageState, ReleaseType, InstallTime, Applicable, Copyright, Company, CreationTime, Description) } catch { }
+    $hotfixes = @(Invoke-WudOptionalProvider $Context 'servicing' 'Get-HotFix' { Get-HotFix -ErrorAction Stop | Select-Object HotFixID, Description, InstalledBy, InstalledOn, Caption })
+    $packages = @(Invoke-WudOptionalProvider $Context 'servicing' 'Get-WindowsPackage -Online' { Get-WindowsPackage -Online -ErrorAction Stop | Select-Object PackageName, PackageState, ReleaseType, InstallTime, Applicable, Copyright, Company, CreationTime, Description })
     $servicing = [pscustomobject][ordered]@{ PendingReboot = $pending; UpdateHistory = $history; HotFixes = $hotfixes; Packages = $packages }
     Write-WudJsonAtomic -Path (Join-Path $path 'servicing.json') -InputObject $servicing -Depth 20
     $Context.Inventory['Servicing'] = $servicing
@@ -474,7 +486,7 @@ function Invoke-WudActiveHealthCollector {
     $sfcTimeout = [int]$Context.Settings.timeoutsSeconds.sfcVerifyOnly
     $diagnosticPath = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'CurrentDiagnostics')
     $dismLog = Join-Path $diagnosticPath 'dism-scanhealth.log'
-    $null = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Online', '/Cleanup-Image', '/ScanHealth', '/English', ("/LogPath:{0}" -f $dismLog)) -Name 'dism-scanhealth' -TimeoutSeconds $dismTimeout -SuccessExitCodes @(0, 3010)
+    $null = Invoke-WudProcess -Context $Context -FilePath 'dism.exe' -ArgumentList @('/Online', '/Cleanup-Image', '/ScanHealth', '/English', ("/LogPath:{0}" -f $dismLog)) -Name 'dism-scanhealth' -TimeoutSeconds $dismTimeout -SuccessExitCodes @(0, 3010) -ExpectedArtifacts @($dismLog)
     $null = Invoke-WudProcess -Context $Context -FilePath 'sfc.exe' -ArgumentList @('/verifyonly') -Name 'sfc-verifyonly' -TimeoutSeconds $sfcTimeout -SuccessExitCodes @(0, 1)
 }
 
@@ -618,12 +630,16 @@ function Copy-WudEvidenceItem {
         $item = Get-Item -LiteralPath $Source -Force -ErrorAction Stop
         if ($item.PSIsContainer) {
             $null = New-WudDirectory -Path $destination
-            $result = Invoke-WudProcess -Context $Context -FilePath 'robocopy.exe' -ArgumentList @($Source, $destination, '/E', '/COPY:DAT', '/DCOPY:T', '/R:1', '/W:1', '/XJ', '/SL', '/NP') -Name ("copy-{0}" -f $DestinationName) -TimeoutSeconds 3600 -SuccessExitCodes @(0, 1, 2, 3, 4, 5, 6, 7)
-            if (-not $result.Succeeded) {
+            $result = Invoke-WudProcess -Context $Context -FilePath 'robocopy.exe' -ArgumentList @($Source, $destination, '/E', '/COPY:DAT', '/DCOPY:T', '/R:1', '/W:1', '/XJ', '/SL', '/NP') -Name ("copy-{0}" -f $DestinationName) -TimeoutSeconds 3600 -SuccessExitCodes @(0, 1, 2, 3, 4, 5, 6, 7) -ExpectedArtifacts @($destination)
+            $usable = $result.Succeeded -or $result.ExecutionStatus -eq 'ArtifactCapturedDespiteProcessUncertainty'
+            if (-not $usable) {
                 $impact = if ($DestinationName -match '(?i)Panther|Rollback|SetupCopyLogs') { 'Material' } else { 'Optional' }
-                $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $Source -Status $(if ($result.TimedOut) { 'TimedOut' } else { 'CopyFailed' }) -Detail ("robocopy returned {0}." -f $result.ExitCodeHex) -Impact $impact
+                $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $Source -Status $result.ExecutionStatus -Detail $result.Detail -Impact $impact
             }
-            return $result.Succeeded
+            elseif (-not $result.Succeeded) {
+                $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $Source -Status 'ArtifactCapturedDespiteProcessUncertainty' -Detail $result.Detail
+            }
+            return $usable
         }
         $null = New-WudDirectory -Path (Split-Path -Parent $destination)
         Copy-Item -LiteralPath $Source -Destination $destination -Force -ErrorAction Stop
@@ -719,16 +735,46 @@ function Invoke-WudWindowsUpdateLogCollector {
     $escaped = $logPath.Replace("'", "''")
     $script = "Get-WindowsUpdateLog -LogPath '$escaped' -ErrorAction Stop | Out-Null"
     $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $null = Invoke-WudProcess -Context $Context -FilePath $powerShell -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $script) -Name 'convert-windows-update-log' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.windowsUpdateLog)
-    $doConfig = $null
-    $doStatus = @()
-    $doLog = @()
-    try { $doConfig = Get-DOConfig -Verbose -ErrorAction Stop | Out-String } catch { }
-    try { $doStatus = @(Get-DeliveryOptimizationStatus -ErrorAction Stop | Select-Object *) } catch { }
-    try { $doLog = @(Get-DeliveryOptimizationLog -ErrorAction Stop | Select-Object -First 20000) } catch { }
-    Write-WudText -Path (Join-Path $path 'DeliveryOptimizationConfig.txt') -Text ([string]$doConfig)
-    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationStatus.json') -InputObject $doStatus
-    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationLog.json') -InputObject $doLog -Depth 10
+    $null = Invoke-WudProcess -Context $Context -FilePath $powerShell -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $script) -Name 'convert-windows-update-log' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.windowsUpdateLog) -ExpectedArtifacts @($logPath)
+
+    $do = $null
+    if (Get-Command -Name 'Get-WudProgressSample' -ErrorAction SilentlyContinue) {
+        $probe = Get-WudProgressSample -RunPath $Context.RunPath -TargetVersion $Context.TargetVersion -TargetBuild ([int]$Context.Target.buildFamily) -IncludeStaticDeliveryData
+        $do = $probe.DeliveryOptimization
+    }
+    else {
+        $do = [pscustomobject][ordered]@{
+            Status = [pscustomobject]@{ Provider = 'Get-DeliveryOptimizationStatus'; Status = 'Unavailable'; Records = @(); Error = 'RecorderModuleNotLoaded' }
+            PeerInfo = [pscustomobject]@{ Provider = 'Get-DeliveryOptimizationStatus -PeerInfo'; Status = 'Unavailable'; Records = @(); Error = 'RecorderModuleNotLoaded' }
+            Performance = [pscustomobject]@{ Provider = 'Get-DeliveryOptimizationPerfSnap'; Status = 'Unavailable'; Records = @(); Error = 'RecorderModuleNotLoaded' }
+            PerformanceThisMonth = [pscustomobject]@{ Provider = 'Get-DeliveryOptimizationPerfSnapThisMonth'; Status = 'Unavailable'; Records = @(); Error = 'RecorderModuleNotLoaded' }
+            Configuration = [pscustomobject]@{ Provider = 'Get-DOConfig'; Status = 'Unavailable'; Records = @(); Error = 'RecorderModuleNotLoaded' }
+        }
+    }
+    $logProvider = [ordered]@{ Provider = 'Get-DeliveryOptimizationLog'; Status = 'Unavailable'; Records = @(); Error = 'CommandNotFound'; CapturedUtc = [DateTime]::UtcNow.ToString('o') }
+    if (Get-Command -Name 'Get-DeliveryOptimizationLog' -ErrorAction SilentlyContinue) {
+        try {
+            $logProvider.Status = 'Available'
+            $logProvider.Error = $null
+            $logProvider.Records = @(Get-DeliveryOptimizationLog -ErrorAction Stop | Select-Object -First 20000)
+        }
+        catch {
+            $logProvider.Status = 'Failed'
+            $logProvider.Error = Get-WudErrorDetail -ErrorRecord $_
+        }
+    }
+    $do | Add-Member -NotePropertyName ReadableLog -NotePropertyValue ([pscustomobject]$logProvider) -Force
+    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimization.json') -InputObject $do -Depth 20
+    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationStatus.json') -InputObject $do.Status -Depth 20
+    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationPeerInfo.json') -InputObject $do.PeerInfo -Depth 20
+    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationPerformance.json') -InputObject ([pscustomobject]@{ Current = $do.Performance; ThisMonth = $do.PerformanceThisMonth }) -Depth 20
+    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationConfig.json') -InputObject $do.Configuration -Depth 20
+    Write-WudJsonAtomic -Path (Join-Path $path 'DeliveryOptimizationLog.json') -InputObject ([pscustomobject]$logProvider) -Depth 20
+    foreach ($provider in @($do.Status, $do.PeerInfo, $do.Performance, $do.PerformanceThisMonth, $do.Configuration, ([pscustomobject]$logProvider))) {
+        if ([string]$provider.Status -eq 'Failed') {
+            $null = Add-WudCollectionGap -Context $Context -Collector 'windows-update' -Source ([string]$provider.Provider) -Status 'ProviderFailed' -Detail ([string]$provider.Error)
+        }
+    }
 }
 
 function Invoke-WudEventCollector {
@@ -761,12 +807,13 @@ function Invoke-WudEventCollector {
         $target = Join-Path $path ($safe + '.evtx')
         $metadata = Invoke-WudProcess -Context $Context -FilePath 'wevtutil.exe' -ArgumentList @('gl', $channel) -Name ("event-channel-{0}" -f $safe) -TimeoutSeconds 120
         if ($metadata.ExitCode -eq 0) {
-            $export = Invoke-WudProcess -Context $Context -FilePath 'wevtutil.exe' -ArgumentList @('epl', $channel, $target, '/ow:true') -Name ("event-export-{0}" -f $safe) -TimeoutSeconds 900
-            $null = $exports.Add([pscustomobject][ordered]@{ Channel = $channel; Exported = $export.Succeeded; Path = $target; Error = $export.Error })
+            $export = Invoke-WudProcess -Context $Context -FilePath 'wevtutil.exe' -ArgumentList @('epl', $channel, $target, '/ow:true') -Name ("event-export-{0}" -f $safe) -TimeoutSeconds 900 -ExpectedArtifacts @($target)
+            $exported = $export.Succeeded -or $export.ExecutionStatus -eq 'ArtifactCapturedDespiteProcessUncertainty'
+            $null = $exports.Add([pscustomobject][ordered]@{ Channel = $channel; Exported = $exported; Path = $target; ExecutionStatus = $export.ExecutionStatus; ExitCode = $export.ExitCode; Error = if ($exported) { $null } else { $export.Detail } })
         }
         else {
-            $null = Add-WudCollectionGap -Context $Context -Collector 'events' -Source $channel -Status 'Unavailable' -Detail 'The event channel was unavailable or disabled.'
-            $null = $exports.Add([pscustomobject][ordered]@{ Channel = $channel; Exported = $false; Path = $null; Error = 'Channel unavailable or disabled.' })
+            $null = Add-WudCollectionGap -Context $Context -Collector 'events' -Source $channel -Status $metadata.ExecutionStatus -Detail $metadata.Detail
+            $null = $exports.Add([pscustomobject][ordered]@{ Channel = $channel; Exported = $false; Path = $null; ExecutionStatus = $metadata.ExecutionStatus; ExitCode = $metadata.ExitCode; Error = $metadata.Detail })
         }
     }
     $start = (Get-Date).AddDays(-[int]$Context.Settings.eventLookbackDays)
@@ -786,10 +833,9 @@ function Invoke-WudEventCollector {
                 })
             }
         }
-        catch { }
+        catch { $null = Add-WudCollectionGap -Context $Context -Collector 'events' -Source $log -Status 'ReadableQueryFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_) }
     }
-    $reliability = @()
-    try { $reliability = @(Get-CimInstance Win32_ReliabilityRecords -ErrorAction Stop | Where-Object { $_.TimeGenerated -ge $start } | Select-Object TimeGenerated, SourceName, ProductName, EventIdentifier, Message, InsertionStrings) } catch { }
+    $reliability = @(Invoke-WudOptionalProvider $Context 'events' 'Win32_ReliabilityRecords' { Get-CimInstance Win32_ReliabilityRecords -ErrorAction Stop | Where-Object { $_.TimeGenerated -ge $start } | Select-Object TimeGenerated, SourceName, ProductName, EventIdentifier, Message, InsertionStrings })
     Write-WudJsonAtomic -Path (Join-Path $path 'event-exports.json') -InputObject @($exports)
     Write-WudJsonAtomic -Path (Join-Path $path 'errors-and-warnings.json') -InputObject @($events) -Depth 10
     $eventRows = @($events | ForEach-Object {
@@ -931,7 +977,7 @@ function Invoke-WudSetupDiagCollector {
     }
     Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-tool.json') -InputObject $inputMetadata
     $output = Join-Path $path 'SetupDiagResults.json'
-    $result = Invoke-WudProcess -Context $Context -FilePath $tool.Path -ArgumentList @(("/Output:{0}" -f $output), ("/LogsPath:{0}" -f $selectedInput[0].Path), '/Format:json', '/ZipLogs:False', '/NoTel', '/Verbose') -Name 'setupdiag' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.setupDiag) -SuccessExitCodes @(0, 1) -WorkingDirectory $path
+    $result = Invoke-WudProcess -Context $Context -FilePath $tool.Path -ArgumentList @(("/Output:{0}" -f $output), ("/LogsPath:{0}" -f $selectedInput[0].Path), '/Format:json', '/ZipLogs:False', '/NoTel', '/Verbose') -Name 'setupdiag' -TimeoutSeconds ([int]$Context.Settings.timeoutsSeconds.setupDiag) -SuccessExitCodes @(0, 1) -WorkingDirectory $path -ExpectedArtifacts @($output)
     Write-WudJsonAtomic -Path (Join-Path $path 'setupdiag-execution.json') -InputObject $result -Depth 20
 }
 

@@ -46,7 +46,7 @@ The collector does not take ownership of protected sources or loosen their ACLs.
 
 ## Cross-reboot changes
 
-Preflight mode can create a temporary SYSTEM scheduled task and guarded SetupConfig entries. Ownership metadata and original file bytes are saved in run state. Cleanup removes only objects created by that run and restores the original SetupConfig when safe.
+Preflight mode can create temporary SYSTEM recorder and resume tasks plus guarded SetupConfig entries. Ownership metadata and original file bytes are saved in run state. Cleanup stops the recorder, removes only objects created by that run, and restores the original SetupConfig when safe.
 
 Hook scripts are intentionally minimal: write an outcome marker, request the scheduled task, and return. They do not perform collection in the Windows Setup/OOBE critical path.
 

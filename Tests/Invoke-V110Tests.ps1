@@ -87,7 +87,7 @@ try {
     Assert-WudV110 ($html -match 'Content-Security-Policy' -and $html -notmatch '<script\s+src=') 'Fact report has an offline restrictive content contract'
     Assert-WudV110 ($html -notmatch "<script>alert\('v110'\)</script>" -and $html -match '&lt;script&gt;alert') 'Fact report escapes collected script-like text'
     Assert-WudV110 ($html -match 'id="fact-type-filter"' -and $html -match 'id="fact-scope-filter"') 'Fact report type and scope filters are present'
-    foreach ($artifact in @('Report.html', 'Summary.json', 'Facts.csv', 'Findings.csv', 'Timeline.csv', 'Attempts.json', 'ExcludedEvidence.json', 'Inventory.json', 'ReviewBundle.zip', 'Evidence.zip', 'Manifest.json', 'Checksums.sha256', 'Collector.log')) {
+    foreach ($artifact in @('Report.html', 'Summary.json', 'Facts.csv', 'Findings.csv', 'Timeline.csv', 'Attempts.json', 'ExcludedEvidence.json', 'Inventory.json', 'RecorderSummary.json', 'ProgressSamples.jsonl', 'StateTransitions.jsonl', 'Checkpoints.json', 'ReviewBundle.zip', 'Evidence.zip', 'Manifest.json', 'Checksums.sha256', 'Collector.log')) {
         Assert-WudV110 (Test-Path -LiteralPath (Join-Path $context.OutputPath $artifact)) "v1.1 artifact $artifact"
     }
     $summary = Read-WudJson -Path (Join-Path $context.OutputPath 'Summary.json')
@@ -95,7 +95,7 @@ try {
     foreach ($requiredProperty in @($schema.required)) {
         Assert-WudV110 ($null -ne $summary.PSObject.Properties[[string]$requiredProperty]) ("v1.1 summary required property {0}" -f $requiredProperty)
     }
-    Assert-WudV110 ($summary.SchemaSemanticVersion -eq '1.1.0') 'v1.1 summary semantic version'
+    Assert-WudV110 ($summary.SchemaSemanticVersion -eq '2.0.0') 'v2 summary semantic version preserves v1.1 fact-only behavior'
     Assert-WudV110 ($summary.AnalysisMode -eq 'FactOnly') 'Summary declares fact-only mode'
     Assert-WudV110 ($summary.AttemptScope.ValidatedWindowsUpdate -eq 1) 'Summary reports validated attempt count'
 

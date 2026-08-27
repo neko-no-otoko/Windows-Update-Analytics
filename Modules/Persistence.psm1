@@ -138,7 +138,7 @@ function Install-WudRuntimeCopy {
     $sourceFull = [IO.Path]::GetFullPath($Context.ToolRoot).TrimEnd('\')
     $runtimeFull = [IO.Path]::GetFullPath($runtimeRoot).TrimEnd('\')
     if ($sourceFull -eq $runtimeFull) { return $runtimeRoot }
-    foreach ($file in @('Invoke-Win11UpgradeDiag.ps1', 'Start-Win11UpgradeDiag.cmd', 'BundleManifest.sha256', 'VERSION', 'README.md', 'CHANGELOG.md', 'NOTICE.md')) {
+    foreach ($file in @('Invoke-Win11UpgradeDiag.ps1', 'Watch-Win11Upgrade.ps1', 'Start-Win11UpgradeDiag.cmd', 'BundleManifest.sha256', 'VERSION', 'README.md', 'CHANGELOG.md', 'NOTICE.md')) {
         $source = Join-Path $Context.ToolRoot $file
         if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $runtimeRoot $file) -Force }
     }
@@ -208,6 +208,58 @@ function Install-WudResumeTask {
         throw
     }
     return [pscustomobject]@{ TaskName = $taskName; TaskPath = $taskPath; FullName = "$taskPath$taskName"; FolderCreated = $folderCreated }
+}
+
+function Install-WudRecorderTask {
+    param($Context, [string]$RuntimePath)
+    $taskName = "Recorder-$($Context.RunId)"
+    $taskPath = '\Win11UpgradeDiag\'
+    $scheduleService = New-Object -ComObject 'Schedule.Service'
+    $scheduleService.Connect()
+    $rootFolder = $scheduleService.GetFolder('\')
+    try { $null = $scheduleService.GetFolder($taskPath) }
+    catch { $null = $rootFolder.CreateFolder('Win11UpgradeDiag') }
+    $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $script = Join-Path $RuntimePath 'Watch-Win11Upgrade.ps1'
+    $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -RunPath "{1}" -TargetVersion "{2}" -TargetBuild {3} -IntervalSeconds {4} -ProgressBucketSize {5} -MaximumCheckpoints {6} -MaximumCheckpointFileBytes {7} -MaximumCheckpointBytes {8}' -f
+        $script, $Context.RunPath, $Context.TargetVersion, $Context.Target.buildFamily,
+        $Context.Settings.recorder.sampleIntervalSeconds, $Context.Settings.recorder.progressBucketPercent,
+        $Context.Settings.recorder.maximumCheckpoints, $Context.Settings.recorder.maximumCheckpointFileBytes,
+        $Context.Settings.recorder.maximumCheckpointBytes
+    $action = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments -WorkingDirectory $RuntimePath
+    $startup = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $executionLimit = New-TimeSpan -Days ([Math]::Min(365, [Math]::Max(1, $Context.ArmDays + 1)))
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit $executionLimit -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action -Trigger $startup -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+    return [pscustomobject]@{ TaskName = $taskName; TaskPath = $taskPath; FullName = "$taskPath$taskName" }
+}
+
+function Start-WudRecorderTask {
+    param([Parameter(Mandatory = $true)]$State)
+    $recorderTask = Get-WudObjectPropertyValue $State 'RecorderTask'
+    if (-not $recorderTask) { return [pscustomobject]@{ Status = 'NotConfigured'; Error = $null } }
+    try {
+        $stopMarker = Join-Path $State.RunPath 'State\recorder.stop'
+        if (Test-Path -LiteralPath $stopMarker) { Remove-Item -LiteralPath $stopMarker -Force -ErrorAction Stop }
+        Start-ScheduledTask -TaskName $recorderTask.TaskName -TaskPath $recorderTask.TaskPath -ErrorAction Stop
+        return [pscustomobject]@{ Status = 'Started'; Error = $null }
+    }
+    catch { return [pscustomobject]@{ Status = 'StartFailed'; Error = (Get-WudErrorDetail -ErrorRecord $_) } }
+}
+
+function Stop-WudRecorderTask {
+    param([Parameter(Mandatory = $true)]$State)
+    $stopMarker = Join-Path $State.RunPath 'State\recorder.stop'
+    try { Write-WudText -Path $stopMarker -Text ([DateTime]::UtcNow.ToString('o')) }
+    catch { }
+    $recorderTask = Get-WudObjectPropertyValue $State 'RecorderTask'
+    if (-not $recorderTask) { return [pscustomobject]@{ Status = 'NotConfigured'; Error = $null } }
+    try {
+        Stop-ScheduledTask -TaskName $recorderTask.TaskName -TaskPath $recorderTask.TaskPath -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ Status = 'Stopped'; Error = $null }
+    }
+    catch { return [pscustomobject]@{ Status = 'StopFailed'; Error = (Get-WudErrorDetail -ErrorRecord $_) } }
 }
 
 function Get-WudSetupConfigKey {
@@ -316,12 +368,14 @@ function Install-WudSetupConfigHooks {
 function Install-WudPersistence {
     param([Parameter(Mandatory = $true)]$Context)
     $task = $null
+    $recorderTask = $null
     $hooks = $null
     try {
         $runtime = Install-WudRuntimeCopy -Context $Context
         if (-not (Protect-WudRunAcl -Context $Context -Path (Get-WudProgramDataRoot) -Name 'protect-programdata-acl')) { throw 'The ProgramData staging ACL could not be restricted.' }
         if (-not (Protect-WudRunAcl -Context $Context -Path $Context.RunPath -Name 'protect-run-acl')) { throw 'The run staging ACL could not be restricted.' }
         $task = Install-WudResumeTask -Context $Context -RuntimePath $runtime
+        $recorderTask = Install-WudRecorderTask -Context $Context -RuntimePath $runtime
         $setupConfig = $null
         if (-not $Context.NoSetupHooks) {
             $hooks = New-WudHookScripts -Context $Context -TaskName $task.TaskName
@@ -332,6 +386,9 @@ function Install-WudPersistence {
         if ($task) {
             try { Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -Confirm:$false -ErrorAction SilentlyContinue } catch { }
         }
+        if ($recorderTask) {
+            try { Unregister-ScheduledTask -TaskName $recorderTask.TaskName -TaskPath $recorderTask.TaskPath -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        }
         if ($hooks -and $hooks.HookPath -and (Test-Path -LiteralPath $hooks.HookPath)) {
             try { Remove-Item -LiteralPath $hooks.HookPath -Recurse -Force -ErrorAction SilentlyContinue } catch { }
         }
@@ -339,7 +396,7 @@ function Install-WudPersistence {
     }
     $identity = Get-WudLightOsIdentity
     $state = [pscustomobject][ordered]@{
-        SchemaVersion      = 1
+        SchemaVersion      = 2
         ToolVersion       = $Context.ToolVersion
         RunId             = $Context.RunId
         RunPath           = $Context.RunPath
@@ -353,6 +410,13 @@ function Install-WudPersistence {
         Status            = 'Armed'
         BaselineIdentity  = $identity
         Task              = $task
+        RecorderTask      = $recorderTask
+        Recorder          = [pscustomobject][ordered]@{
+            SampleIntervalSeconds = $Context.Settings.recorder.sampleIntervalSeconds
+            ProgressBucketPercent = $Context.Settings.recorder.progressBucketPercent
+            MaximumCheckpoints = $Context.Settings.recorder.maximumCheckpoints
+            TelemetryPath = (Join-Path $Context.RunPath 'Evidence\Recorder\ProgressSamples.jsonl')
+        }
         Hooks             = $hooks
         SetupConfig       = $setupConfig
         NoInternet        = $Context.NoInternet
@@ -363,6 +427,7 @@ function Install-WudPersistence {
     try { Save-WudRunState -Context $Context -State $state -SetActive $true }
     catch {
         try { Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+        if ($recorderTask) { try { Unregister-ScheduledTask -TaskName $recorderTask.TaskName -TaskPath $recorderTask.TaskPath -Confirm:$false -ErrorAction SilentlyContinue } catch { } }
         try { $null = Restore-WudSetupConfig -Context $Context -State $state } catch { }
         if ($hooks -and $hooks.HookPath -and (Test-Path -LiteralPath $hooks.HookPath)) {
             try { Remove-Item -LiteralPath $hooks.HookPath -Recurse -Force -ErrorAction SilentlyContinue } catch { }
@@ -387,9 +452,10 @@ function Test-WudSetupInProgress {
 
 function Get-WudResumeSignal {
     param([Parameter(Mandatory = $true)]$State)
-    $createdUtc = [DateTimeOffset]::Parse([string]$State.CreatedUtc).UtcDateTime
+    $createdUtc = ConvertTo-WudUtcDateTime $State.CreatedUtc
     $identity = Get-WudLightOsIdentity
     $signals = New-Object Collections.ArrayList
+    $providerResults = New-Object Collections.ArrayList
     $markers = @(
         @{ Kind = 'PostOOBE marker'; Path = (Join-Path $State.RunPath 'State\Markers\post-oobe.marker') },
         @{ Kind = 'PostRollback marker'; Path = (Join-Path $State.RunPath 'State\Markers\post-rollback.marker') }
@@ -401,22 +467,49 @@ function Get-WudResumeSignal {
         $null = $signals.Add([pscustomobject]@{ Kind = 'Target build reached'; Source = 'Current OS identity'; TimestampUtc = $identity.CapturedUtc })
     }
     foreach ($candidate in @(
-        (Join-Path $env:SystemDrive '$WINDOWS.~BT\Sources\Rollback\setupact.log'),
-        (Join-Path $env:SystemDrive '$WINDOWS.~BT\Sources\Panther\setupact.log'),
-        (Join-Path $env:SystemRoot 'Panther\setupact.log'),
-        (Join-Path $env:SystemRoot 'Logs\SetupDiag\SetupDiagResults.xml')
+        [pscustomobject]@{ Kind = 'Rollback evidence'; Path = (Join-Path $env:SystemDrive '$WINDOWS.~BT\Sources\Rollback\setupact.log'); TerminalByLocation = $true },
+        [pscustomobject]@{ Kind = 'Setup terminal evidence'; Path = (Join-Path $env:SystemDrive '$WINDOWS.~BT\Sources\Panther\setuperr.log'); TerminalByLocation = $false },
+        [pscustomobject]@{ Kind = 'SetupDiag result'; Path = (Join-Path $env:SystemRoot 'Logs\SetupDiag\SetupDiagResults.xml'); TerminalByLocation = $false }
     )) {
-        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        if (-not (Test-Path -LiteralPath $candidate.Path)) { continue }
         try {
-            $item = Get-Item -LiteralPath $candidate -ErrorAction Stop
-            if ($item.LastWriteTimeUtc -gt $createdUtc) { $null = $signals.Add([pscustomobject]@{ Kind = 'New setup evidence'; Source = $candidate; TimestampUtc = $item.LastWriteTimeUtc.ToString('o') }) }
+            $item = Get-Item -LiteralPath $candidate.Path -ErrorAction Stop
+            if ($item.LastWriteTimeUtc -le $createdUtc) { continue }
+            $terminal = [bool]$candidate.TerminalByLocation
+            if (-not $terminal) {
+                $stream = Open-WudFileReadStream -Path $candidate.Path
+                try {
+                    $readLength = [int][Math]::Min([long]$stream.Length, 1048576L)
+                    if ($stream.Length -gt $readLength) { $null = $stream.Seek(-$readLength, [IO.SeekOrigin]::End) }
+                    [byte[]]$bytes = New-Object byte[] $readLength
+                    $actual = $stream.Read($bytes, 0, $readLength)
+                    $text = (New-Object Text.UTF8Encoding($false, $false)).GetString($bytes, 0, $actual)
+                    $terminal = $text -match '(?i)0xC1900[12][0-9A-F]{3}|Matching Profile found|FailureData|SetupDiag.*(?:failure|rollback)|MOSETUP_E_|SetupPlatform.*(?:failed|failure)'
+                }
+                finally { $stream.Dispose() }
+            }
+            if ($terminal) { $null = $signals.Add([pscustomobject]@{ Kind = $candidate.Kind; Source = $candidate.Path; TimestampUtc = $item.LastWriteTimeUtc.ToString('o') }) }
         }
-        catch { }
+        catch { $null = $providerResults.Add([pscustomobject]@{ Provider = 'TerminalEvidenceProbe'; Source = $candidate.Path; Status = 'Failed'; Error = Get-WudErrorDetail -ErrorRecord $_ }) }
     }
+    try {
+        $searcher = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
+        $count = $searcher.GetTotalHistoryCount()
+        $targetTitlePattern = '(?i)(?:Feature update|Windows 11).*' + [Regex]::Escape([string]$State.TargetVersion)
+        foreach ($entry in @($searcher.QueryHistory(0, [Math]::Min($count, 500)))) {
+            if ($entry.Date.ToUniversalTime() -le $createdUtc) { continue }
+            if ([string]$entry.Title -match $targetTitlePattern -and [int]$entry.ResultCode -in @(4, 5)) {
+                $null = $signals.Add([pscustomobject]@{ Kind = 'Windows Update terminal result'; Source = 'Microsoft.Update.Session history'; TimestampUtc = $entry.Date.ToUniversalTime().ToString('o'); ResultCode = [int]$entry.ResultCode; HResult = $entry.HResult; Title = $entry.Title })
+            }
+        }
+        $null = $providerResults.Add([pscustomobject]@{ Provider = 'Microsoft.Update.Session history'; Source = 'WUA COM history'; Status = 'Available'; Error = $null })
+    }
+    catch { $null = $providerResults.Add([pscustomobject]@{ Provider = 'Microsoft.Update.Session history'; Source = 'WUA COM history'; Status = 'Failed'; Error = Get-WudErrorDetail -ErrorRecord $_ }) }
     return [pscustomobject][ordered]@{
         Ready = @($signals).Count -gt 0
         CurrentIdentity = $identity
         Signals = @($signals)
+        Providers = @($providerResults)
         EvaluatedUtc = [DateTime]::UtcNow.ToString('o')
     }
 }
@@ -459,7 +552,17 @@ function Remove-WudPersistence {
         [string]$FinalStatus = 'Completed',
         [bool]$KeepActivePointer = $false
     )
-    $cleanup = [ordered]@{ Task = 'NotFound'; SetupConfig = 'NotModified'; Hooks = 'NotFound'; ActivePointer = 'NotFound'; CompletedUtc = [DateTime]::UtcNow.ToString('o') }
+    $cleanup = [ordered]@{ Task = 'NotFound'; RecorderTask = 'NotFound'; SetupConfig = 'NotModified'; Hooks = 'NotFound'; ActivePointer = 'NotFound'; CompletedUtc = [DateTime]::UtcNow.ToString('o') }
+    try {
+        $stop = Stop-WudRecorderTask -State $State
+        $cleanup.RecorderTask = $stop.Status
+        $ownedRecorderTask = Get-WudObjectPropertyValue $State 'RecorderTask'
+        if ($ownedRecorderTask) {
+            Unregister-ScheduledTask -TaskName $ownedRecorderTask.TaskName -TaskPath $ownedRecorderTask.TaskPath -Confirm:$false -ErrorAction Stop
+            $cleanup.RecorderTask = 'Removed'
+        }
+    }
+    catch { $cleanup.RecorderTask = "Failed: $($_.Exception.Message)" }
     try {
         if ($State.Task) {
             Unregister-ScheduledTask -TaskName $State.Task.TaskName -TaskPath $State.Task.TaskPath -Confirm:$false -ErrorAction Stop
@@ -521,5 +624,6 @@ function Complete-WudDeferredCopyState {
 Export-ModuleMember -Function @(
     'Get-WudProgramDataRoot', 'Get-WudActiveRunState', 'Get-WudRunState', 'Save-WudRunState',
     'Get-WudLightOsIdentity', 'Resolve-WudAutomaticMode', 'Install-WudPersistence', 'Test-WudSetupInProgress',
-    'Get-WudResumeSignal', 'Remove-WudPersistence', 'Complete-WudDeferredCopyState'
+    'Get-WudResumeSignal', 'Remove-WudPersistence', 'Complete-WudDeferredCopyState',
+    'Install-WudRecorderTask', 'Start-WudRecorderTask', 'Stop-WudRecorderTask'
 )

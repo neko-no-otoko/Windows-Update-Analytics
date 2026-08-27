@@ -6,8 +6,8 @@
 
 1. Copy and extract the bundle to a local folder.
 2. Launch `Start-Win11UpgradeDiag.cmd -Mode Preflight` as the intended technician.
-3. Open the run folder under `%PUBLIC%\Documents`, confirm that the fact report was produced, and note its collection coverage. Exit `0` is not a prediction that the upgrade will succeed.
-4. Leave `%ProgramData%\Win11UpgradeDiag` in place while the organization's existing deployment process performs the upgrade.
+3. Open the run folder under `%PUBLIC%\Documents`, confirm that the fact report was produced, and confirm that the console reported `Persistent 60-second progress recorder started`. Exit `0` is not a prediction that the upgrade will succeed.
+4. Leave `%ProgramData%\Win11UpgradeDiag` in place while the organization's existing deployment process offers, downloads, and installs the upgrade.
 5. After success or rollback, allow the startup task to run. It waits three minutes by default so services and log writers can settle.
 6. Sign in as a technician and review the refreshed output. Use `Report.html` for fast verification and `ReviewBundle.zip` for approved external review. If `-CopyTo` was supplied, invoke `Auto` once interactively if a SYSTEM resume could not reach the share.
 
@@ -41,11 +41,12 @@ An armed run contains:
 - A staged runtime beneath `%ProgramData%\Win11UpgradeDiag\Runtime\<version>`
 - State beneath `%ProgramData%\Win11UpgradeDiag\Runs\<RunId>`
 - A SYSTEM scheduled task named `\Win11UpgradeDiag\Resume-<RunId>` with startup and daily triggers
+- A long-running SYSTEM task named `\Win11UpgradeDiag\Recorder-<RunId>` with a startup trigger, immediate start, one-minute restart-on-failure policy, and run expiry
 - Optional short `PostOOBE`, `PostRollback`, `PostRollbackContext`, and `CopyLogs` SetupConfig entries
 
-The setup hook scripts only write an outcome marker and request the scheduled task. They return immediately and do not wait for collection.
+The recorder appends `Evidence\Recorder\ProgressSamples.jsonl` every 60 seconds. A state, build, boot, or Setup-progress-bucket boundary creates `Evidence\Recorder\Checkpoints\<timestamp>-<state>`. The setup hook scripts only write an outcome marker and request the resume task. They return immediately and do not wait for collection.
 
-An ordinary reboot is not treated as an upgrade outcome. Resume finalization requires a target-build transition, an owned PostOOBE/PostRollback marker, or qualifying setup/rollback evidence newer than the preflight baseline. If Setup is still running or none of those signals exists, the scheduled task exits cleanly and remains armed for a later trigger.
+An ordinary reboot is not treated as an upgrade outcome. The recorder restarts and its boot identity changes, but resume finalization still requires a target-build transition, an owned PostOOBE/PostRollback marker, or qualifying setup/rollback evidence newer than the preflight baseline. If Setup is still running or none of those signals exists, the resume task exits cleanly and remains armed for a later trigger.
 
 The staging ACL is restricted to SYSTEM, built-in Administrators, and the initiating technician SID. The tool does not store a password, token, or share credential.
 

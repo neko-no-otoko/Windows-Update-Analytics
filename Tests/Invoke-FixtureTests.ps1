@@ -114,7 +114,7 @@ try {
     foreach ($requiredProperty in @($summarySchema.required)) {
         Assert-Wud ($null -ne $summary.PSObject.Properties[[string]$requiredProperty]) ("Fleet schema required property: {0}" -f $requiredProperty)
     }
-    Assert-Wud ($summary.SchemaVersion -eq 1) 'Fleet summary schema version'
+    Assert-Wud ($summary.SchemaVersion -eq 2) 'Fleet summary schema version'
     Assert-Wud ($summary.Device.ComputerName -eq 'LAB-PC-01') 'Fleet summary device identity'
     Assert-Wud ($summary.Outcome -eq 'Blocked') 'Fleet summary outcome'
     Assert-Wud ($summary.RuleCatalogVersion -eq '1.1.0') 'Fleet summary rule catalog version'
