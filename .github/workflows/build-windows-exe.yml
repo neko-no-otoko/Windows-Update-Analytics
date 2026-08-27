@@ -17,6 +17,7 @@ on:
       - "*.md"
       - "VERSION"
       - "BundleManifest.sha256"
+      - ".gitattributes"
       - ".github/workflows/build-windows-exe.yml"
 
 permissions:
