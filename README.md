@@ -1,6 +1,6 @@
 # Windows Update Analytics
 
-Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.0 starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture. It normalizes direct facts, applies transparent evidence-scope gates, and produces an offline HTML report plus a compact `ReviewBundle.zip` designed for drag-and-drop human or external AI review.
+Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.1 starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture automatically or on an explicit operator request. It normalizes direct facts, applies transparent evidence-scope gates, and produces an offline HTML report plus a compact `ReviewBundle.zip` designed for drag-and-drop human or external AI review.
 
 The target map is optimized for Windows 11 23H2 to 25H2. The tool treats that path as a full feature upgrade; it never starts Windows Setup, installs updates, bypasses safeguards, applies repairs, uploads evidence, or asserts a root cause.
 
@@ -30,7 +30,7 @@ The bundle remains intentionally unsigned and hash-manifested. The launcher uses
 The launcher accepts the same arguments as the PowerShell entry point:
 
 ```text
-Start-Win11UpgradeDiag.cmd [-Mode Auto|Preflight|Resume|Forensic|Disarm]
+Start-Win11UpgradeDiag.cmd [-Mode Auto|Preflight|Resume|Finalize|Forensic|Disarm]
   [-TargetVersion 25H2]
   [-OutputPath <local-folder>]
   [-CopyTo <UNC-folder>]
@@ -55,6 +55,10 @@ Examples:
 # to a share when an interactive technician token is available
 .\Start-Win11UpgradeDiag.cmd -OutputPath D:\UpgradeDiagnostics -CopyTo \\server\share\UpgradeDiagnostics
 
+# Stop an armed recorder now, take a final boundary snapshot, build the final
+# report, and remove this run's tasks/hooks
+.\Start-Win11UpgradeDiag.cmd -Mode Finalize
+
 # Remove this tool's scheduled task and hooks while preserving evidence
 .\Start-Win11UpgradeDiag.cmd -Mode Disarm
 ```
@@ -70,19 +74,20 @@ Media scanning is optional. It requires `-AcceptWindowsEula`, checks the media a
 | `Auto` | Uses saved state, current build, and recent setup/rollback evidence to select preflight, resume, or forensic behavior. |
 | `Preflight` | Collects a baseline and arms a temporary SYSTEM follow-up task and guarded SetupConfig hooks. It does not predict upgrade success. |
 | `Resume` | Continues a previously armed run after a reboot, produces pre/post comparison, then removes owned persistence. Normally invoked automatically. |
+| `Finalize` | Explicitly stops an armed recorder, records the operator override, takes a final boundary checkpoint, produces the full report, and removes owned persistence. It does not require automatic terminal evidence. |
 | `Forensic` | Performs a one-shot investigation of the evidence currently present on the device without arming follow-up. |
 | `Disarm` | Removes only this run's task/hooks and restores its exact SetupConfig backup when safe. Diagnostic artifacts remain. |
 
 Arming expires after 30 days by default. `-NoSetupHooks` disables SetupConfig integration but retains the delayed startup task. Repeated calls use saved run identity and guarded cleanup to avoid duplicate ownership.
 
-Two SYSTEM tasks are created for an armed run. `Recorder-<RunId>` samples immediately and every 60 seconds, restarts after reboot or failure, and never finalizes the case. `Resume-<RunId>` performs the delayed, heavy final collection only after a target-build transition, an owned setup outcome marker, or qualifying setup/rollback evidence newer than the baseline. An ordinary reboot is not interpreted as upgrade completion.
+Two SYSTEM tasks are created for an armed run. `Recorder-<RunId>` samples immediately and every 60 seconds, restarts after reboot or failure, and never finalizes the case. `Resume-<RunId>` performs the delayed, heavy final collection only after a target-build transition, an owned setup outcome marker, or qualifying setup/rollback evidence newer than the baseline. An ordinary reboot is not interpreted as upgrade completion. An operator can instead run `-Mode Finalize`; that explicit mode records whether Setup was active and whether automatic terminal evidence existed, but it does not let those gates block the requested final snapshot.
 
 ## Four-layer evidence design
 
 1. **Persistent progress samples:** append-only `ProgressSamples.jsonl` records current build, boot identity, Setup progress/state, pending-reboot signals, active Setup processes, Delivery Optimization job counters, peers, and performance snapshots.
 2. **Native evidence first:** Panther, rollback, Windows Update ETL, USO, Delivery Optimization, servicing, event, crash, and management sources are copied before any readable conversion or active diagnostic runs.
 3. **Boundary checkpoints:** a state, boot, build, or 10-percent Setup-progress-bucket change creates a timestamped native checkpoint with its own manifest. A recent, run-window Setup log can label a source-reported Downlevel, SafeOS, FirstBoot, or OOBE phase; old imaging logs cannot activate a recorder phase by themselves.
-4. **Final forensic capture:** after success, rollback, failure evidence, or a stable post-reboot signal, the recorder stops and a final passive-first collection, normalization pass, evidence archive, and report are produced.
+4. **Final forensic capture:** after success, rollback, failure evidence, a stable post-reboot signal, or an explicit `-Mode Finalize` request, the recorder stops and a final passive-first collection, normalization pass, evidence archive, and report are produced.
 
 Delivery Optimization traffic without a direct Windows Update caller or Microsoft update URL is labeled `DeliveryOptimizationTransferObserved`, not an upgrade download. Even Windows Update-owned transport remains context until the setup-attempt gates confirm a feature update.
 
@@ -140,7 +145,7 @@ Excluded and older evidence remains indexed, but it cannot enter the included up
 
 ## Fact-only and external review model
 
-Version 2.0 uses four record types:
+Version 2 uses four record types:
 
 - `Observed`: a value or log record read directly by the collector.
 - `SourceReported`: a result emitted by Windows Update, Windows Setup, or scoped SetupDiag.
@@ -170,6 +175,7 @@ The cross-platform runners check legacy parsers, attempt gates, contamination ex
 pwsh -NoProfile -File .\Tests\Invoke-FixtureTests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V110Tests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V200Tests.ps1
+pwsh -NoProfile -File .\Tests\Invoke-V210Tests.ps1
 ```
 
 If Pester 5 is installed, run:

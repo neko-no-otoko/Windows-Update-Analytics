@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Auto', 'Preflight', 'Resume', 'Forensic', 'Disarm')]
+    [ValidateSet('Auto', 'Preflight', 'Resume', 'Finalize', 'Forensic', 'Disarm')]
     [string]$Mode = 'Auto',
 
     [ValidatePattern('^\d{2}H\d$')]
@@ -28,12 +28,13 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$toolVersion = '2.0.0'
+$toolVersion = '2.1.0'
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $context = $null
 $armedState = $null
 $state = $null
-$resumeState = $null
+$finalizationState = $null
+$finalizationFinalStatus = $null
 $runLock = $null
 
 function Enter-WudRunLock {
@@ -148,16 +149,16 @@ try {
         exit 50
     }
 
-    if ($Mode -eq 'Resume') {
+    if ($Mode -in @('Resume', 'Finalize')) {
         $state = Get-WudActiveRunState
         if ($RunId -and (-not $state -or $state.RunId -ne $RunId)) {
             $candidateRunPath = Join-Path (Get-WudProgramDataRoot) ("Runs\{0}" -f $RunId)
             if (Test-Path -LiteralPath $candidateRunPath) { $state = Get-WudRunState -RunPath $candidateRunPath }
         }
-        if (-not $state) { throw 'Resume was requested, but no matching run state was found.' }
+        if (-not $state) { throw "$Mode was requested, but no matching armed run state was found. Use Forensic for a one-shot collection." }
         if ($RunId -and $state.RunId -ne $RunId) { throw "Active run '$($state.RunId)' does not match requested run '$RunId'." }
         $TargetVersion = [string]$state.TargetVersion
-        $context = New-WudRunContext -ToolRoot $toolRoot -ToolVersion $toolVersion -RunId $state.RunId -RunPath $state.RunPath -OutputPath $state.OutputPath -Mode 'Resume' -PhaseLabel 'Resume' -TargetVersion $TargetVersion -CopyTo $state.CopyTo -MediaPath $null -AcceptWindowsEula $false -IncludeLargeDumps ([bool]$state.IncludeLargeDumps) -NoInternet ([bool]$state.NoInternet) -NoSetupHooks ([bool]$state.NoSetupHooks) -ArmDays $ArmDays
+        $context = New-WudRunContext -ToolRoot $toolRoot -ToolVersion $toolVersion -RunId $state.RunId -RunPath $state.RunPath -OutputPath $state.OutputPath -Mode $Mode -PhaseLabel $Mode -TargetVersion $TargetVersion -CopyTo $state.CopyTo -MediaPath $null -AcceptWindowsEula $false -IncludeLargeDumps ([bool]$state.IncludeLargeDumps) -NoInternet ([bool]$state.NoInternet) -NoSetupHooks ([bool]$state.NoSetupHooks) -ArmDays $ArmDays
         try { $runLock = Enter-WudRunLock -RunPath $context.RunPath }
         catch { Write-Host 'Another Win11UpgradeDiag process is already handling this run.'; exit 10 }
         if ([string]$state.Status -eq 'AwaitingInteractiveCopy') {
@@ -177,26 +178,65 @@ try {
             Write-WudLog -Context $context -Level WARN -Message 'The requested UNC copy is still pending. The local report remains valid and the active pointer was retained.'
             exit 10
         }
-        if ([DateTime]::UtcNow -gt (ConvertTo-WudUtcDateTime $state.ExpiresUtc)) {
-            Write-WudLog -Context $context -Level WARN -Message 'The armed diagnostic run expired before a stable upgrade outcome was observed.'
-            $null = Remove-WudPersistence -Context $context -State $state -FinalStatus 'Expired'
-            exit 10
+        if ($Mode -eq 'Resume') {
+            if ([DateTime]::UtcNow -gt (ConvertTo-WudUtcDateTime $state.ExpiresUtc)) {
+                Write-WudLog -Context $context -Level WARN -Message 'The armed diagnostic run expired before a stable upgrade outcome was observed.'
+                $null = Remove-WudPersistence -Context $context -State $state -FinalStatus 'Expired'
+                exit 10
+            }
+            if ($DelaySeconds -gt 0) {
+                Write-WudLog -Context $context -Level INFO -Message "Delaying resume collection for $DelaySeconds seconds to allow Windows services to settle."
+                Start-Sleep -Seconds $DelaySeconds
+            }
+            if (Test-WudSetupInProgress) {
+                Write-WudLog -Context $context -Level INFO -Message 'Windows Setup is still active. This resume pass will defer collection until a later startup or daily trigger.'
+                exit 10
+            }
+            $resumeSignal = Get-WudResumeSignal -State $state
+            Write-WudJsonAtomic -Path (Join-Path $context.RunPath 'State\last-resume-signal.json') -InputObject $resumeSignal -Depth 10
+            if (-not $resumeSignal.Ready) {
+                Write-WudLog -Context $context -Level INFO -Message 'No target-build transition, owned hook marker, rollback source, or terminal Windows Update/Setup result newer than the baseline was detected. The run remains armed.'
+                exit 10
+            }
+            Write-WudLog -Context $context -Level INFO -Message ("Resume collection was authorized by: {0}" -f (@($resumeSignal.Signals | ForEach-Object Kind) -join ', '))
         }
-        if ($DelaySeconds -gt 0) {
-            Write-WudLog -Context $context -Level INFO -Message "Delaying resume collection for $DelaySeconds seconds to allow Windows services to settle."
-            Start-Sleep -Seconds $DelaySeconds
+        else {
+            $setupActiveAtRequest = Test-WudSetupInProgress
+            try { $resumeSignal = Get-WudResumeSignal -State $state }
+            catch {
+                $resumeSignal = [pscustomobject][ordered]@{
+                    Ready = $false; CurrentIdentity = $null; Signals = @()
+                    Providers = @([pscustomobject]@{ Provider = 'Operator finalization signal evaluation'; Status = 'Failed'; Error = (Get-WudErrorDetail -ErrorRecord $_) })
+                    EvaluatedUtc = [DateTime]::UtcNow.ToString('o')
+                }
+            }
+            $operatorName = try { [Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { [Environment]::UserName }
+            $operatorFinalization = [pscustomobject][ordered]@{
+                SchemaVersion = 1
+                ToolVersion = $toolVersion
+                RunId = $state.RunId
+                RequestedUtc = [DateTime]::UtcNow.ToString('o')
+                RequestedBy = $operatorName
+                OriginalStateStatus = [string]$state.Status
+                ArmExpiredAtRequest = [DateTime]::UtcNow -gt (ConvertTo-WudUtcDateTime $state.ExpiresUtc)
+                SetupActiveAtRequest = [bool]$setupActiveAtRequest
+                AutomaticTerminalSignalPresent = [bool]$resumeSignal.Ready
+                AutomaticSignalEvaluation = $resumeSignal
+                OverrideScope = 'The operator explicitly requested final collection. Automatic terminal-signal and Setup-in-progress gates were recorded but did not block finalization.'
+            }
+            Write-WudJsonAtomic -Path (Join-Path $context.RunPath 'State\operator-finalize.json') -InputObject $operatorFinalization -Depth 20
+            $state | Add-Member -NotePropertyName OperatorFinalization -NotePropertyValue $operatorFinalization -Force
+            Save-WudRunState -Context $context -State $state -SetActive $true
+            if ($setupActiveAtRequest) {
+                Write-WudLog -Context $context -Level WARN -Message 'Operator finalization was explicitly requested while Windows Setup is active. The result will be a mid-flight factual snapshot, and persistent monitoring will be removed after the report is created.'
+            }
+            elseif ($resumeSignal.Ready) {
+                Write-WudLog -Context $context -Level INFO -Message ("Operator finalization requested; automatic terminal evidence was also present: {0}" -f (@($resumeSignal.Signals | ForEach-Object Kind) -join ', '))
+            }
+            else {
+                Write-WudLog -Context $context -Level WARN -Message 'Operator finalization was explicitly requested without an automatic terminal signal. The report will preserve the observed state and will not infer success or failure.'
+            }
         }
-        if (Test-WudSetupInProgress) {
-            Write-WudLog -Context $context -Level INFO -Message 'Windows Setup is still active. This resume pass will defer collection until a later startup or daily trigger.'
-            exit 10
-        }
-        $resumeSignal = Get-WudResumeSignal -State $state
-        Write-WudJsonAtomic -Path (Join-Path $context.RunPath 'State\last-resume-signal.json') -InputObject $resumeSignal -Depth 10
-        if (-not $resumeSignal.Ready) {
-            Write-WudLog -Context $context -Level INFO -Message 'No target-build transition, owned hook marker, rollback source, or terminal Windows Update/Setup result newer than the baseline was detected. The run remains armed.'
-            exit 10
-        }
-        Write-WudLog -Context $context -Level INFO -Message ("Resume collection was authorized by: {0}" -f (@($resumeSignal.Signals | ForEach-Object Kind) -join ', '))
     }
     else {
         if (-not $RunId) { $RunId = '{0}-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'), [Guid]::NewGuid().ToString('N').Substring(0, 8) }
@@ -235,18 +275,25 @@ try {
     }
     catch { }
 
-    if ($Mode -eq 'Resume') {
+    if ($Mode -in @('Resume', 'Finalize')) {
         $stopResult = Stop-WudRecorderTask -State $state
         Write-WudLog -Context $context -Level INFO -Message ("Persistent recorder stop request: {0}." -f $stopResult.Status)
         $lockPath = Join-Path $context.RunPath 'State\recorder.lock'
         $lockDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        $recorderLockReleased = -not (Test-Path -LiteralPath $lockPath)
         while ((Test-Path -LiteralPath $lockPath) -and [DateTime]::UtcNow -lt $lockDeadline) {
             $probeLock = $null
-            try { $probeLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); break }
+            try {
+                $probeLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                $recorderLockReleased = $true
+                break
+            }
             catch { Start-Sleep -Milliseconds 500 }
             finally { if ($probeLock) { $probeLock.Dispose() } }
         }
-        $null = Invoke-WudRecorderSample -RunPath $context.RunPath -TargetVersion $context.TargetVersion -TargetBuild ([int]$context.Target.buildFamily) -Reason 'FinalCollectionBoundary' -ProgressBucketSize ([int]$context.Settings.recorder.progressBucketPercent) -MaximumCheckpoints ([int]$context.Settings.recorder.maximumCheckpoints) -MaximumCheckpointFileBytes ([long]$context.Settings.recorder.maximumCheckpointFileBytes) -MaximumCheckpointBytes ([long]$context.Settings.recorder.maximumCheckpointBytes) -ForceCheckpoint
+        if (-not $recorderLockReleased) { throw 'The persistent recorder did not release its per-run lock within 15 seconds. Final collection was not started, and the recorder will be made retryable.' }
+        $boundaryReason = if ($Mode -eq 'Finalize') { 'OperatorFinalizationBoundary' } else { 'FinalCollectionBoundary' }
+        $null = Invoke-WudRecorderSample -RunPath $context.RunPath -TargetVersion $context.TargetVersion -TargetBuild ([int]$context.Target.buildFamily) -Reason $boundaryReason -ProgressBucketSize ([int]$context.Settings.recorder.progressBucketPercent) -MaximumCheckpoints ([int]$context.Settings.recorder.maximumCheckpoints) -MaximumCheckpointFileBytes ([long]$context.Settings.recorder.maximumCheckpointFileBytes) -MaximumCheckpointBytes ([long]$context.Settings.recorder.maximumCheckpointBytes) -ForceCheckpoint
     }
     else {
         $reason = if ($Mode -eq 'Preflight') { 'PreflightBaseline' } else { 'ForensicSnapshot' }
@@ -273,10 +320,10 @@ try {
         }
         Write-WudLog -Context $context -Level INFO -Message "Automatic follow-up is armed until $($armedState.ExpiresUtc)."
     }
-    elseif ($Mode -eq 'Resume') {
-        $resumeState = Get-WudRunState -RunPath $context.RunPath
-        $context.Inventory['Persistence'] = $resumeState
-        $resumeFinalStatus = if ($context.Outcome -eq 'Upgrade Succeeded') { 'CompletedSuccess' } elseif ($context.Outcome -eq 'Rolled Back') { 'CompletedRollback' } else { 'CompletedForensic' }
+    elseif ($Mode -in @('Resume', 'Finalize')) {
+        $finalizationState = Get-WudRunState -RunPath $context.RunPath
+        $context.Inventory['Persistence'] = $finalizationState
+        $finalizationFinalStatus = if ($context.Outcome -eq 'Upgrade Succeeded') { 'CompletedSuccess' } elseif ($context.Outcome -eq 'Rolled Back') { 'CompletedRollback' } elseif ($context.Outcome -eq 'Failed') { 'CompletedFailure' } elseif ($Mode -eq 'Finalize') { 'CompletedOperatorFinalized' } else { 'CompletedForensic' }
     }
 
     $null = Export-WudReviewBundle -Context $context
@@ -288,13 +335,13 @@ try {
         if ($recorderStart.Status -eq 'Started') { Write-WudLog -Context $context -Level INFO -Message 'Persistent 60-second progress recorder started.' }
         else { Write-WudLog -Context $context -Level WARN -Message ("Persistent recorder did not start immediately: {0}" -f $recorderStart.Error) }
     }
-    if ($Mode -eq 'Resume') {
+    if ($Mode -in @('Resume', 'Finalize')) {
         $deferCopy = -not [string]::IsNullOrWhiteSpace($context.CopyTo) -and (-not $context.LastCopyResult -or -not $context.LastCopyResult.Succeeded)
         if ($deferCopy) {
-            $resumeFinalStatus = 'AwaitingInteractiveCopy'
-            $resumeState | Add-Member -NotePropertyName FinalExitCode -NotePropertyValue ([int]$context.ExitCode) -Force
+            $finalizationFinalStatus = 'AwaitingInteractiveCopy'
+            $finalizationState | Add-Member -NotePropertyName FinalExitCode -NotePropertyValue ([int]$context.ExitCode) -Force
         }
-        $null = Remove-WudPersistence -Context $context -State $resumeState -FinalStatus $resumeFinalStatus -KeepActivePointer $deferCopy
+        $null = Remove-WudPersistence -Context $context -State $finalizationState -FinalStatus $finalizationFinalStatus -KeepActivePointer $deferCopy
     }
     Write-WudLog -Context $context -Level INFO -Message "Report complete: $reportPath"
     Write-Host ''
@@ -316,7 +363,7 @@ catch {
         if ($armedState) {
             try { $null = Remove-WudPersistence -Context $context -State $armedState -FinalStatus 'ToolFailureDisarmed' } catch { }
         }
-        elseif ($Mode -eq 'Resume' -and $state) {
+        elseif ($Mode -in @('Resume', 'Finalize') -and $state) {
             try {
                 $restart = Start-WudRecorderTask -State $state
                 Write-WudLog -Context $context -Level WARN -Message ("Final collection failed; recorder restart status is {0} so the armed run can be retried." -f $restart.Status)

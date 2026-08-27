@@ -50,7 +50,7 @@ Preflight mode can create temporary SYSTEM recorder and resume tasks plus guarde
 
 Hook scripts are intentionally minimal: write an outcome marker, request the scheduled task, and return. They do not perform collection in the Windows Setup/OOBE critical path.
 
-`-NoSetupHooks` suppresses SetupConfig changes. `-Mode Disarm` removes owned persistence and preserves evidence.
+`-NoSetupHooks` suppresses SetupConfig changes. `-Mode Finalize` records an explicit operator override, performs final collection, removes owned persistence, and preserves evidence. `-Mode Disarm` removes owned persistence without performing final collection.
 
 ## Share access and credentials
 

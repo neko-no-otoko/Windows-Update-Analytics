@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.0 — 2026-08-26
+
+- Added public `-Mode Finalize` for an operator-controlled end to an armed persistent recording run.
+- Finalize records the operator identity, arm-expiry state, Setup-active state, and automatic terminal-signal evaluation before stopping collection.
+- Added a forced `OperatorFinalizationBoundary` sample/checkpoint followed by the same full passive-first collection, fact analysis, report, archive, and owned-persistence cleanup used by automatic finalization.
+- Kept automatic `Resume` safeguards unchanged: it still defers while Setup is active and still requires direct terminal evidence.
+- A successful operator finalization without a directly observed terminal result remains factually labeled; the operator action never implies upgrade success or failure.
+- Failed finalization attempts restart the recorder so the armed run remains retryable.
+- Final collection now refuses to race a recorder that has not released its per-run lock within the bounded shutdown window.
+
 ## 2.0.0 — 2026-08-26
 
 - Added a persistent SYSTEM progress recorder with 60-second append-only JSONL sampling, restart-on-failure behavior, cross-reboot continuity, expiry, and owned cleanup.

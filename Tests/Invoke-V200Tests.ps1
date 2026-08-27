@@ -197,10 +197,10 @@ try {
 
     $entrySource = Get-Content -LiteralPath (Join-Path $toolRoot 'Invoke-Win11UpgradeDiag.ps1') -Raw
     $persistenceSource = Get-Content -LiteralPath (Join-Path $toolRoot 'Modules/Persistence.psm1') -Raw
-    Assert-WudV200 ($entrySource -match '\$toolVersion\s*=\s*''2\.0\.0''' -and $entrySource -match 'FinalCollectionBoundary') 'Entry point identifies v2 and performs a final recorder boundary'
+    Assert-WudV200 ($entrySource -match '\$toolVersion\s*=\s*''2\.1\.0''' -and $entrySource -match 'FinalCollectionBoundary') 'Current entry point retains the v2 automatic final recorder boundary'
     Assert-WudV200 ($persistenceSource -match 'Recorder-' -and $persistenceSource -match 'Watch-Win11Upgrade\.ps1') 'Persistence registers the cross-reboot recorder task'
 
-    Write-Host 'All v2.0 fixture tests passed.' -ForegroundColor Cyan
+    Write-Host 'All v2 persistent-recorder fixture tests passed.' -ForegroundColor Cyan
 }
 finally {
     $env:SystemDrive = $oldSystemDrive

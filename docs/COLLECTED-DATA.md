@@ -1,6 +1,6 @@
 # Collected data and factual output
 
-Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes direct records, and records what was unavailable. Version 2.0 adds a persistent observation window while deliberately stopping before root-cause judgment. Availability varies by Windows edition, management stack, setup stage, retention, localization, and permissions.
+Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes direct records, and records what was unavailable. Version 2 adds a persistent observation window while deliberately stopping before root-cause judgment. Availability varies by Windows edition, management stack, setup stage, retention, localization, and permissions.
 
 ## Collection matrix
 

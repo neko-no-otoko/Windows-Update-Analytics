@@ -23,6 +23,14 @@ Collect as soon as practical. Windows servicing, Disk Cleanup, Storage Sense, an
 
 Run `Start-Win11UpgradeDiag.cmd -Mode Disarm` elevated. It removes the run's owned scheduled task and hook scripts and safely restores SetupConfig. It deliberately retains the staged evidence, state, reports, and logs.
 
+### Stop recording and finalize now
+
+Run `Start-Win11UpgradeDiag.cmd -Mode Finalize` elevated. This is an explicit operator override: it stops the active recorder, waits for its per-run lock, writes a forced `OperatorFinalizationBoundary` sample and checkpoint, performs the full passive-first collection and report pipeline, then removes the run's owned tasks/hooks and restores SetupConfig.
+
+`Finalize` records the requesting Windows identity, whether the arm period had expired, whether Setup was active, and the complete automatic-terminal-signal evaluation in `State\operator-finalize.json`. Those observations are included in the final evidence. They do not alter the outcome model. If no success, rollback, or failure is directly observed, the report says so; it does not turn the operator action into a successful-upgrade claim.
+
+If Setup is still active, `Finalize` continues because the selected mode is explicit. The report is labeled from the facts available at that moment (normally `Upgrade In Progress`), locked sources may appear as collection gaps, and no later progress will be recorded after successful cleanup. Use `Resume`/`Auto` when continued monitoring is preferable. Use `Disarm` only when no final collection is wanted.
+
 ## Automatic selection
 
 `Auto` follows this order:
@@ -46,7 +54,7 @@ An armed run contains:
 
 The recorder appends `Evidence\Recorder\ProgressSamples.jsonl` every 60 seconds. A state, build, boot, or Setup-progress-bucket boundary creates `Evidence\Recorder\Checkpoints\<timestamp>-<state>`. The setup hook scripts only write an outcome marker and request the resume task. They return immediately and do not wait for collection.
 
-An ordinary reboot is not treated as an upgrade outcome. The recorder restarts and its boot identity changes, but resume finalization still requires a target-build transition, an owned PostOOBE/PostRollback marker, or qualifying setup/rollback evidence newer than the preflight baseline. If Setup is still running or none of those signals exists, the resume task exits cleanly and remains armed for a later trigger.
+An ordinary reboot is not treated as an upgrade outcome. The recorder restarts and its boot identity changes, but resume finalization still requires a target-build transition, an owned PostOOBE/PostRollback marker, or qualifying setup/rollback evidence newer than the preflight baseline. If Setup is still running or none of those signals exists, the resume task exits cleanly and remains armed for a later trigger. Only an explicit `-Mode Finalize` request bypasses those automatic gates, and that override is written into the evidence before the recorder stops.
 
 The staging ACL is restricted to SYSTEM, built-in Administrators, and the initiating technician SID. The tool does not store a password, token, or share credential.
 
@@ -121,7 +129,7 @@ Check these in order:
 5. Whether Windows Setup is still active; resume intentionally defers in that state
 6. SetupConfig conflict notes if hook creation was expected
 
-Run the launcher with `-Mode Auto` interactively to resume the saved run, or use `-Mode Disarm` to cancel it.
+Run the launcher with `-Mode Auto` interactively to evaluate the saved run, use `-Mode Finalize` to stop and produce the final report regardless of the automatic gate, or use `-Mode Disarm` to cancel without a new final collection.
 
 ### Integrity check failed
 

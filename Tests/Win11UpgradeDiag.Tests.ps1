@@ -120,4 +120,8 @@ Describe 'End-to-end fixture contract' {
     It 'passes v2 persistent-recorder, status-model, Delivery Optimization, and execution-contract fixtures' {
         { & (Join-Path $PSScriptRoot 'Invoke-V200Tests.ps1') } | Should -Not -Throw
     }
+
+    It 'passes v2.1 operator-finalization lifecycle and factual-outcome fixtures' {
+        { & (Join-Path $PSScriptRoot 'Invoke-V210Tests.ps1') } | Should -Not -Throw
+    }
 }

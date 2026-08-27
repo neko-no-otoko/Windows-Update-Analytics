@@ -679,6 +679,10 @@ function Invoke-WudRawEvidenceCollector {
         @{ Name = 'setupapi.dev.log'; Path = (Join-Path $windows 'INF\setupapi.dev.log') },
         @{ Name = 'setupapi.app.log'; Path = (Join-Path $windows 'INF\setupapi.app.log') }
     )
+    $operatorFinalizationPath = Join-Path $Context.RunPath 'State\operator-finalize.json'
+    if ($Context.Mode -eq 'Finalize' -or (Test-Path -LiteralPath $operatorFinalizationPath)) {
+        $sources += @{ Name = 'Win11UpgradeDiag-Operator-Finalization'; Path = $operatorFinalizationPath }
+    }
     $copyResults = New-Object Collections.ArrayList
     foreach ($source in $sources) {
         $present = Test-Path -LiteralPath $source.Path
@@ -686,7 +690,7 @@ function Invoke-WudRawEvidenceCollector {
         if (-not $present) { $null = Add-WudCollectionGap -Context $Context -Collector 'raw-evidence' -Source $source.Path -Status 'Missing' -Detail 'The configured evidence source was not present at collection time.' }
         $null = $copyResults.Add([pscustomobject][ordered]@{ Source = $source.Path; Destination = $source.Name; Present = $present; Copied = $copied })
     }
-    if ($Context.Mode -in @('Resume', 'Forensic')) {
+    if ($Context.Mode -in @('Resume', 'Finalize', 'Forensic')) {
         $rawRoot = Join-Path $Context.SnapshotPath 'Raw'
         $coreSetupFiles = @(Get-ChildItem -LiteralPath $rawRoot -File -Recurse -Force -ErrorAction SilentlyContinue | Where-Object {
             $_.FullName -match '(?i)WindowsBT-Panther|WindowsBT-Rollback|Windows-Panther|WindowsOld-Panther|SetupCopyLogs' -and

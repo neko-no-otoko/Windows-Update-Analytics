@@ -1,6 +1,6 @@
 # Windows VM acceptance checklist
 
-Version 2.0 acceptance must validate the persistent recorder, fact-only engine, contamination boundary, and explicit outcome/provenance model; v1.0 causal-rule expectations are retained only as regression fixtures and are not the default runtime behavior.
+Version 2.1 acceptance must validate the persistent recorder, explicit operator finalization, fact-only engine, contamination boundary, and explicit outcome/provenance model; v1.0 causal-rule expectations are retained only as regression fixtures and are not the default runtime behavior.
 
 Fixture and parser tests are necessary but not sufficient. Complete this checklist on isolated Windows VMs before expanding beyond a controlled pilot. Record the bundle SHA-256, tool version, VM snapshot, Windows edition/language/build/UBR, architecture, update source, security agents, and observed runtime for every case.
 
@@ -67,6 +67,10 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 - [ ] Repeated `Auto` invocation does not create duplicate tasks, hooks, or run ownership.
 - [ ] Repeated reboot does not repeatedly finalize an already completed run.
 - [ ] Expiry removes persistence and retains diagnostic artifacts.
+- [ ] `Finalize` records its operator override, terminal-signal evaluation, expiry state, and Setup-active state before stopping the recorder.
+- [ ] `Finalize` writes a forced `OperatorFinalizationBoundary` checkpoint, produces the full final artifacts, removes owned persistence, and does not invent a terminal outcome.
+- [ ] `Finalize` while Setup is active produces a factual mid-flight report and explicit collection gaps where sources remain locked.
+- [ ] A failed `Finalize` pass restarts the recorder and leaves the run retryable.
 - [ ] `Disarm` removes only owned persistence and retains evidence.
 
 ## Active diagnostic safety
