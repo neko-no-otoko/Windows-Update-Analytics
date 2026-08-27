@@ -23,12 +23,16 @@ param(
     # so the staged SYSTEM task never needs a second executable or script.
     [string]$RunId,
     [ValidateRange(0, 600)]
-    [int]$DelaySeconds = 0
+    [int]$DelaySeconds = 0,
+
+    # Internal launcher diagnostic. The CMD launcher passes a machine-readable
+    # location so failures before Collector.log exists are never silent.
+    [string]$BootstrapLogPath
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$toolVersion = '2.1.0'
+$toolVersion = '2.1.1'
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $context = $null
 $armedState = $null
@@ -36,6 +40,23 @@ $state = $null
 $finalizationState = $null
 $finalizationFinalStatus = $null
 $runLock = $null
+
+function Write-WudBootstrapLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$Level,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+    if ([string]::IsNullOrWhiteSpace($BootstrapLogPath)) { return }
+    try {
+        $bootstrapParent = Split-Path -Parent $BootstrapLogPath
+        if ($bootstrapParent -and -not [IO.Directory]::Exists($bootstrapParent)) { $null = [IO.Directory]::CreateDirectory($bootstrapParent) }
+        $bootstrapLine = '{0} [{1}] {2}' -f [DateTime]::UtcNow.ToString('o'), $Level.ToUpperInvariant(), $Message
+        [IO.File]::AppendAllText($BootstrapLogPath, $bootstrapLine + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
+    }
+    catch { }
+}
+
+Write-WudBootstrapLog -Level INFO -Message ("Entry point started. Version={0}; Mode={1}; PowerShell={2}; PID={3}; Elevated={4}" -f $toolVersion, $Mode, $PSVersionTable.PSVersion, $PID, $(try { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $false }))
 
 function Enter-WudRunLock {
     param([Parameter(Mandatory = $true)][string]$RunPath)
@@ -59,6 +80,7 @@ if (Test-Path -LiteralPath $bundleManifest) {
         }
     }
     catch {
+        Write-WudBootstrapLog -Level ERROR -Message $_.Exception.Message
         Write-Host $_.Exception.Message -ForegroundColor Red
         exit 40
     }
@@ -74,15 +96,18 @@ try {
     Import-Module (Join-Path $toolRoot 'Modules\Persistence.psm1') -Force -ErrorAction Stop
 }
 catch {
+    Write-WudBootstrapLog -Level ERROR -Message ("Module load failed: {0}" -f $_.Exception.Message)
     Write-Host "Win11UpgradeDiag modules could not be loaded: $($_.Exception.Message)" -ForegroundColor Red
     exit 40
 }
 
 if (-not (Test-WudIsWindows)) {
+    Write-WudBootstrapLog -Level ERROR -Message 'Unsupported operating system: Windows is required.'
     Write-Host 'Win11UpgradeDiag must run on Windows.' -ForegroundColor Red
     exit 50
 }
 if ($PSVersionTable.PSVersion.Major -lt 5) {
+    Write-WudBootstrapLog -Level ERROR -Message ("Unsupported PowerShell version: {0}" -f $PSVersionTable.PSVersion)
     Write-Host 'Windows PowerShell 5.1 or later is required.' -ForegroundColor Red
     exit 50
 }
@@ -92,12 +117,13 @@ if (-not (Test-WudAdministrator)) {
         exit 50
     }
     try {
+        Write-WudBootstrapLog -Level INFO -Message 'Requesting UAC elevation.'
         $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         $elevationArguments = New-Object Collections.ArrayList
         foreach ($token in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $MyInvocation.MyCommand.Path)) {
             $null = $elevationArguments.Add((ConvertTo-WudCommandLineArgument -Value ([string]$token)))
         }
-        foreach ($name in @('Mode', 'TargetVersion', 'OutputPath', 'CopyTo', 'MediaPath', 'AcceptWindowsEula', 'IncludeLargeDumps', 'NoInternet', 'NoSetupHooks', 'ArmDays', 'NoOpen', 'RunId', 'DelaySeconds')) {
+        foreach ($name in @('Mode', 'TargetVersion', 'OutputPath', 'CopyTo', 'MediaPath', 'AcceptWindowsEula', 'IncludeLargeDumps', 'NoInternet', 'NoSetupHooks', 'ArmDays', 'NoOpen', 'RunId', 'DelaySeconds', 'BootstrapLogPath')) {
             if (-not $PSBoundParameters.ContainsKey($name)) { continue }
             $value = $PSBoundParameters[$name]
             if ($value -is [Management.Automation.SwitchParameter]) {
@@ -108,9 +134,11 @@ if (-not (Test-WudAdministrator)) {
             $null = $elevationArguments.Add((ConvertTo-WudCommandLineArgument -Value ([string]$value)))
         }
         $elevated = Start-Process -FilePath $powerShell -ArgumentList (@($elevationArguments) -join ' ') -Verb RunAs -Wait -PassThru -ErrorAction Stop
+        Write-WudBootstrapLog -Level INFO -Message ("Elevated process completed with exit code {0}." -f $elevated.ExitCode)
         exit $elevated.ExitCode
     }
     catch {
+        Write-WudBootstrapLog -Level ERROR -Message ("Elevation failed: {0}" -f $_.Exception.Message)
         Write-Host "Elevation was not completed: $($_.Exception.Message)" -ForegroundColor Red
         exit 50
     }
@@ -344,6 +372,7 @@ try {
         $null = Remove-WudPersistence -Context $context -State $finalizationState -FinalStatus $finalizationFinalStatus -KeepActivePointer $deferCopy
     }
     Write-WudLog -Context $context -Level INFO -Message "Report complete: $reportPath"
+    Write-WudBootstrapLog -Level INFO -Message ("Report complete. ExitCode={0}; Artifacts={1}" -f $context.ExitCode, $context.OutputPath)
     Write-Host ''
     Write-Host ("Outcome: {0}" -f $context.Outcome) -ForegroundColor Cyan
     Write-Host ("Exit code: {0}" -f $context.ExitCode)
@@ -357,6 +386,7 @@ try {
 catch {
     $message = $_.Exception.Message
     $detail = try { Get-WudErrorDetail -ErrorRecord $_ } catch { ($_ | Out-String) }
+    Write-WudBootstrapLog -Level ERROR -Message ("Fatal tool failure: {0}" -f $detail)
     if ($context) {
         $context.CollectionComplete = $false
         try { Write-WudLog -Context $context -Level ERROR -Message ("Fatal tool failure: {0}" -f $detail) } catch { }

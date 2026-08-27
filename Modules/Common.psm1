@@ -349,6 +349,7 @@ function Invoke-WudProcess {
     $errorDetail = $null
     $exitCode = $null
     $processId = $null
+    $processHandle = $null
     try {
         $parameters = @{
             FilePath               = $FilePath
@@ -363,6 +364,13 @@ function Invoke-WudProcess {
         if ($WorkingDirectory) { $parameters.WorkingDirectory = $WorkingDirectory }
         $process = Start-Process @parameters
         $processId = $process.Id
+        # On current Windows 11 builds, Windows PowerShell 5.1 can discard the
+        # native handle returned by Start-Process -PassThru unless -Wait is also
+        # specified. That leaves HasExited available but ExitCode permanently
+        # null. Open the handle while the process is alive so timeout polling and
+        # the eventual exit code are both reliable. This is intentionally before
+        # the first HasExited check, including for commands that exit immediately.
+        $processHandle = $process.Handle
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
         while (-not $process.HasExited) {
             if ([DateTime]::UtcNow -ge $deadline) {
@@ -375,7 +383,10 @@ function Invoke-WudProcess {
             $process.Refresh()
         }
         try { $process.WaitForExit() } catch { }
-        if (-not $timedOut) { $exitCode = $process.ExitCode }
+        if (-not $timedOut) {
+            $process.Refresh()
+            $exitCode = [int]$process.ExitCode
+        }
     }
     catch {
         $errorMessage = $_.Exception.Message
@@ -566,6 +577,101 @@ function ConvertTo-WudExtendedLengthPath {
     return '\\?\' + $fullPath
 }
 
+function ConvertFrom-WudExtendedLengthPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if ($Path.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { return '\\' + $Path.Substring(8) }
+    if ($Path.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) { return $Path.Substring(4) }
+    return $Path
+}
+
+function Get-WudFileTreeSafe {
+    <#
+        Enumerate staged evidence without the Windows PowerShell 5.1 / Win32
+        MAX_PATH recursion boundary. Directory reparse points are never followed.
+        Returned records expose only the file properties used by inventory and
+        archive generation, keeping their paths in normal operator-readable form.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$RootPath,
+        $Context,
+        [string]$Collector = 'filesystem-enumeration'
+    )
+    $records = New-Object Collections.ArrayList
+    if (-not (Test-Path -LiteralPath $RootPath)) { return @() }
+    if (-not (Test-WudIsWindows)) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $RootPath -File -Recurse -Force -ErrorAction SilentlyContinue)) {
+            $null = $records.Add($file)
+        }
+        return @($records)
+    }
+
+    $rootFullPath = [IO.Path]::GetFullPath($RootPath)
+    $rootIoPath = ConvertTo-WudExtendedLengthPath -Path $rootFullPath
+    $pending = New-Object 'Collections.Generic.Stack[string]'
+    $pending.Push($rootIoPath)
+    while ($pending.Count -gt 0) {
+        $directoryIoPath = $pending.Pop()
+        try { $filePaths = @([IO.Directory]::GetFiles($directoryIoPath) | Sort-Object) }
+        catch {
+            if ($Context) {
+                $source = ConvertFrom-WudExtendedLengthPath -Path $directoryIoPath
+                $null = Add-WudCollectionGap -Context $Context -Collector $Collector -Source $source -Status 'ArchiveEnumerationFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_)
+            }
+            continue
+        }
+        foreach ($fileIoPath in $filePaths) {
+            try {
+                $fileInfo = New-Object IO.FileInfo($fileIoPath)
+                $normalPath = ConvertFrom-WudExtendedLengthPath -Path $fileIoPath
+                $null = $records.Add([pscustomobject][ordered]@{
+                    Name = $fileInfo.Name
+                    FullName = $normalPath
+                    Attributes = $fileInfo.Attributes
+                    Length = [long]$fileInfo.Length
+                    LastWriteTime = $fileInfo.LastWriteTime
+                    LastWriteTimeUtc = $fileInfo.LastWriteTimeUtc
+                })
+            }
+            catch {
+                if ($Context) {
+                    $source = ConvertFrom-WudExtendedLengthPath -Path $fileIoPath
+                    $null = Add-WudCollectionGap -Context $Context -Collector $Collector -Source $source -Status 'ArchiveEnumerationFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_)
+                }
+            }
+        }
+
+        try { $directoryPaths = @([IO.Directory]::GetDirectories($directoryIoPath) | Sort-Object) }
+        catch {
+            if ($Context) {
+                $source = ConvertFrom-WudExtendedLengthPath -Path $directoryIoPath
+                $null = Add-WudCollectionGap -Context $Context -Collector $Collector -Source $source -Status 'ArchiveEnumerationFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_)
+            }
+            continue
+        }
+        for ($index = $directoryPaths.Count - 1; $index -ge 0; $index--) {
+            $childIoPath = $directoryPaths[$index]
+            try {
+                $attributes = [IO.File]::GetAttributes($childIoPath)
+                if (([int]$attributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    if ($Context) {
+                        $source = ConvertFrom-WudExtendedLengthPath -Path $childIoPath
+                        $null = Add-WudCollectionGap -Context $Context -Collector $Collector -Source $source -Status 'ArchiveReparsePointSkipped' -Detail 'The staged directory is a filesystem reparse point. Its target was not followed.'
+                    }
+                    continue
+                }
+                $pending.Push($childIoPath)
+            }
+            catch {
+                if ($Context) {
+                    $source = ConvertFrom-WudExtendedLengthPath -Path $childIoPath
+                    $null = Add-WudCollectionGap -Context $Context -Collector $Collector -Source $source -Status 'ArchiveEnumerationFailed' -Detail (Get-WudErrorDetail -ErrorRecord $_)
+                }
+            }
+        }
+    }
+    return @($records)
+}
+
 function Open-WudFileReadStream {
     param([Parameter(Mandatory = $true)][string]$Path)
     $readShare = [IO.FileShare]([int][IO.FileShare]::ReadWrite -bor [int][IO.FileShare]::Delete)
@@ -597,10 +703,13 @@ function Get-WudFileHashSafe {
 }
 
 function Get-WudFileInventory {
-    param([Parameter(Mandatory = $true)][string]$RootPath)
+    param(
+        [Parameter(Mandatory = $true)][string]$RootPath,
+        $Context
+    )
     $items = New-Object Collections.ArrayList
     if (-not (Test-Path -LiteralPath $RootPath)) { return @() }
-    foreach ($file in Get-ChildItem -LiteralPath $RootPath -File -Recurse -Force -ErrorAction SilentlyContinue) {
+    foreach ($file in @(Get-WudFileTreeSafe -RootPath $RootPath -Context $Context -Collector 'report-manifest')) {
         $isReparsePoint = ([int]$file.Attributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0
         $length = $null
         $lastWriteUtc = $null
@@ -696,7 +805,7 @@ Export-ModuleMember -Function @(
     'New-WudDirectory', 'Read-WudJson', 'Write-WudJsonAtomic', 'Write-WudText', 'Get-WudTargetDefinition',
     'New-WudRunContext', 'Write-WudLog', 'Invoke-WudProcess', 'Invoke-WudCollector', 'Add-WudFinding',
     'Add-WudTimelineEvent', 'Get-WudRelativePath', 'Get-WudFileHashSafe', 'Get-WudFileInventory',
-    'ConvertTo-WudExtendedLengthPath', 'Open-WudFileReadStream',
+    'ConvertTo-WudExtendedLengthPath', 'ConvertFrom-WudExtendedLengthPath', 'Get-WudFileTreeSafe', 'Open-WudFileReadStream',
     'Export-WudRegistryTree', 'ConvertTo-WudByteSize', 'Get-WudSeverityRank', 'Get-WudConfidenceRank',
     'Resolve-WudExitCode', 'ConvertTo-WudCommandLineArgument', 'ConvertTo-WudCsvCell', 'Add-WudCollectionGap',
     'Get-WudObjectPropertyValue', 'Get-WudErrorDetail', 'ConvertTo-WudUtcDateTime'

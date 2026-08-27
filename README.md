@@ -1,6 +1,6 @@
 # Windows Update Analytics
 
-Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.1 starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture automatically or on an explicit operator request. It normalizes direct facts, applies transparent evidence-scope gates, and produces an offline HTML report plus a compact `ReviewBundle.zip` designed for drag-and-drop human or external AI review.
+Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.1.1 starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture automatically or on an explicit operator request. It normalizes direct facts, applies transparent evidence-scope gates, and produces an offline HTML report plus a compact `ReviewBundle.zip` designed for drag-and-drop human or external AI review.
 
 The target map is optimized for Windows 11 23H2 to 25H2. The tool treats that path as a full feature upgrade; it never starts Windows Setup, installs updates, bypasses safeguards, applies repairs, uploads evidence, or asserts a root cause.
 
@@ -161,6 +161,7 @@ Outcome is no longer a single ambiguous inference. `Summary.json` separately rep
 - Persistent runtime and runs: `%ProgramData%\Win11UpgradeDiag`
 - Per-run evidence: `%ProgramData%\Win11UpgradeDiag\Runs\<RunId>`
 - Default finalized result: `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`
+- Early launcher/UAC diagnostic: `%PUBLIC%\Documents\Win11UpgradeDiag-Launcher.log`
 - Windows Update SetupConfig: `%SystemDrive%\Users\Default\AppData\Local\Microsoft\Windows\WSUS\SetupConfig.ini`
 
 See [Operations](docs/OPERATIONS.md), [Collected data](docs/COLLECTED-DATA.md), [Security](docs/SECURITY.md), [output schema](docs/SCHEMA.md), and the [Windows VM test checklist](docs/WINDOWS-VM-TEST-CHECKLIST.md).

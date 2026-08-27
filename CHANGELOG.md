@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.1 — 2026-08-27
+
+- Fixed Windows PowerShell 5.1 process accounting by retaining the native process handle before timeout polling, preserving explicit exit codes even for commands that terminate immediately.
+- Replaced legacy recursive evidence enumeration with an extended-length .NET filesystem walker for manifests and `Evidence.zip`, preventing `Get-ChildItem` from aborting archive creation beyond the Win32 path boundary while still skipping reparse directories.
+- Fixed the long-path archive regression fixture cleanup on Windows by deleting the extended-length test tree through the .NET filesystem API before ordinary temporary-directory cleanup.
+- Fixed cross-reboot persistence registration by using the Task Scheduler COM folder path without a trailing slash and re-opening the folder when a preceding registration wins the create race.
+- Treats an absent `PendingFileRenameOperations` registry value as a normal recorder observation instead of emitting a strict-mode provider error every 60 seconds.
+- Added `%PUBLIC%\Documents\Win11UpgradeDiag-Launcher.log` bootstrap logging across the CMD launcher, UAC handoff, integrity validation, module loading, and fatal startup paths so an early failure cannot exit without a durable diagnostic.
+- Kept the report schema and fact-only evidence contract unchanged.
+
 ## 2.1.0 — 2026-08-26
 
 - Added public `-Mode Finalize` for an operator-controlled end to an armed persistent recording run.

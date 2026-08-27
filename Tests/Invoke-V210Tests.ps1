@@ -18,10 +18,13 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("Win11UpgradeDiag-v210-tests-{
 try {
     $entrySource = Get-Content -LiteralPath (Join-Path $toolRoot 'Invoke-Win11UpgradeDiag.ps1') -Raw
     $collectorSource = Get-Content -LiteralPath (Join-Path $toolRoot 'Modules/Collectors.psm1') -Raw
+    $commonSource = Get-Content -LiteralPath (Join-Path $toolRoot 'Modules/Common.psm1') -Raw
+    $persistenceSource = Get-Content -LiteralPath (Join-Path $toolRoot 'Modules/Persistence.psm1') -Raw
+    $launcherSource = Get-Content -LiteralPath (Join-Path $toolRoot 'Start-Win11UpgradeDiag.cmd') -Raw
     $readmeSource = Get-Content -LiteralPath (Join-Path $toolRoot 'README.md') -Raw
 
     Assert-WudV210 ($entrySource -match "ValidateSet\('Auto', 'Preflight', 'Resume', 'Finalize', 'Forensic', 'Disarm'\)") 'Finalize is a public command mode'
-    Assert-WudV210 ($entrySource -match '\$toolVersion\s*=\s*''2\.1\.0''' -and (Get-Content -LiteralPath (Join-Path $toolRoot 'VERSION') -Raw).Trim() -eq '2.1.0') 'Tool and package versions identify v2.1.0'
+    Assert-WudV210 ($entrySource -match '\$toolVersion\s*=\s*''2\.1\.1''' -and (Get-Content -LiteralPath (Join-Path $toolRoot 'VERSION') -Raw).Trim() -eq '2.1.1') 'Tool and package versions identify v2.1.1'
     Assert-WudV210 ($entrySource -match 'if \(\$Mode -eq ''Resume''\)[\s\S]+?Test-WudSetupInProgress[\s\S]+?Get-WudResumeSignal') 'Automatic Resume retains its Setup-active and terminal-signal gates'
     Assert-WudV210 ($entrySource -match 'operator-finalize\.json' -and $entrySource -match 'SetupActiveAtRequest' -and $entrySource -match 'AutomaticTerminalSignalPresent') 'Operator finalization records its explicit override and gate observations'
     Assert-WudV210 ($entrySource -match '''OperatorFinalizationBoundary''' -and $entrySource -match '\$Mode -in @\(''Resume'', ''Finalize''\)') 'Finalize shares the stop, final-collection, and cleanup lifecycle with Resume'
@@ -29,6 +32,15 @@ try {
     Assert-WudV210 ($entrySource -match 'elseif \(\$Mode -in @\(''Resume'', ''Finalize''\) -and \$state\)[\s\S]+?Start-WudRecorderTask') 'A failed Finalize pass can restart the recorder for retry'
     Assert-WudV210 ($collectorSource -match '@\(''Resume'', ''Finalize'', ''Forensic''\)' -and $collectorSource -match '\$Context.Mode -eq ''Finalize''[\s\S]+?operatorFinalizationPath') 'Finalize receives post-attempt evidence checks and captures its audit record'
     Assert-WudV210 ($readmeSource -match '\-Mode Finalize' -and $readmeSource -match 'operator override') 'Operator-facing Finalize behavior and caution are documented'
+    Assert-WudV210 ($commonSource.IndexOf('$processHandle = $process.Handle') -lt $commonSource.IndexOf('$deadline = [DateTime]::UtcNow.AddSeconds')) 'PowerShell 5.1 process handle is retained before timeout polling'
+    Assert-WudV210 ($entrySource -match 'BootstrapLogPath' -and $entrySource -match 'Write-WudBootstrapLog' -and $launcherSource -match 'Win11UpgradeDiag-Launcher\.log') 'Launcher and entry point retain early-startup diagnostics'
+    Assert-WudV210 ($persistenceSource -match '\$comPath = ''\\Win11UpgradeDiag''' -and $persistenceSource -match 'ERROR_ALREADY_EXISTS is idempotent' -and $persistenceSource -notmatch 'GetFolder\(\$taskPath\)') 'Task-folder creation is canonical and idempotent across resume and recorder registration'
+
+    if (Test-WudIsWindows) {
+        $liveSample = Get-WudProgressSample -RunPath $testRoot -TargetVersion '25H2' -TargetBuild 26200
+        $pendingRenameErrors = @($liveSample.PendingReboot.ProviderErrors | Where-Object Source -match 'Session Manager')
+        Assert-WudV210 ($pendingRenameErrors.Count -eq 0) 'Absent PendingFileRenameOperations is a normal not-pending observation under strict mode'
+    }
 
     $runPath = New-WudDirectory -Path (Join-Path $testRoot 'run')
     $recorderPath = New-WudDirectory -Path (Join-Path $runPath 'Evidence/Recorder')

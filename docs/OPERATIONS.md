@@ -135,6 +135,10 @@ Run the launcher with `-Mode Auto` interactively to evaluate the saved run, use 
 
 Re-extract a known-good bundle. Do not edit a runtime file without regenerating `BundleManifest.sha256`. Integrity failure exits `40` before modules or collectors run.
 
+### Launcher exited before a report was created
+
+Open `%PUBLIC%\Documents\Win11UpgradeDiag-Launcher.log`. Version 2.1.1 and later append the CMD start, Windows PowerShell version, process ID, elevation state, UAC handoff result, integrity or module-load failure, and any fatal startup detail there before `Collector.log` exists. Use the newest timestamped block. If a run path was created, also inspect its `Collector.log` and `Failure.txt`.
+
 ### SetupDiag was not used
 
 The tool first looks for an existing or cached SetupDiag. With internet enabled, it follows Microsoft's official redirect, requires a valid Authenticode signature whose signer is Microsoft, records the version/URI/hash, and then invokes `/NoTel` against the newest scoped feature-upgrade-style source. If verification/download fails, or no scoped input exists, fact collection continues and the limitation is visible.

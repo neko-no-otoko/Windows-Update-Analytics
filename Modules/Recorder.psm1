@@ -418,7 +418,8 @@ function Get-WudProgressSample {
     )) {
         try {
             if ($path -match 'Session Manager') {
-                $pendingRename = (Get-ItemProperty -LiteralPath $path -Name PendingFileRenameOperations -ErrorAction SilentlyContinue).PendingFileRenameOperations
+                $pendingRenameRecord = Get-ItemProperty -LiteralPath $path -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
+                $pendingRename = Get-WudObjectPropertyValue $pendingRenameRecord 'PendingFileRenameOperations'
                 if ($pendingRename) { $null = $pendingSignals.Add('PendingFileRenameOperations') }
             }
             elseif (Test-Path -LiteralPath $path) { $null = $pendingSignals.Add($path) }

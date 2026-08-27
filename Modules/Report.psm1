@@ -62,7 +62,7 @@ function New-WudEvidenceArchive {
     $archive = $null
     try {
         $archive = New-Object IO.Compression.ZipArchive($zipStream, [IO.Compression.ZipArchiveMode]::Create, $false)
-        foreach ($file in Get-ChildItem -LiteralPath $SourcePath -File -Recurse -Force -ErrorAction Stop) {
+        foreach ($file in @(Get-WudFileTreeSafe -RootPath $SourcePath -Context $Context -Collector 'report-archive')) {
             $relative = (Get-WudRelativePath -BasePath $SourcePath -Path $file.FullName).Replace('\', '/')
             $isReparsePoint = ([int]$file.Attributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0
             if ($isReparsePoint) {
@@ -727,7 +727,7 @@ function Export-WudReportArtifacts {
     $checkpointManifests = @(Get-ChildItem -LiteralPath (Join-Path $recorderRoot 'Checkpoints') -File -Recurse -Filter 'checkpoint-manifest.json' -ErrorAction SilentlyContinue | ForEach-Object { Read-WudJson -Path $_.FullName })
     Write-WudJsonAtomic -Path (Join-Path $Context.OutputPath 'Checkpoints.json') -InputObject @($checkpointManifests) -Depth 30
     $collectorRecords = Get-WudAllCollectorRecords -Context $Context
-    $evidenceManifest = @(Get-WudFileInventory -RootPath $Context.EvidencePath)
+    $evidenceManifest = @(Get-WudFileInventory -RootPath $Context.EvidencePath -Context $Context)
     foreach ($unhashed in @($evidenceManifest | Where-Object {
         (-not $_.Sha256) -and (-not $_.PSObject.Properties['ArchiveEligible'] -or [bool]$_.ArchiveEligible)
     })) {

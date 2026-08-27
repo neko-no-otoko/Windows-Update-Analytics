@@ -184,6 +184,32 @@ exit /b 0
     return [pscustomobject]@{ HookPath = $hookPath; OobeMarker = $oobeMarker; RollbackMarker = $rollbackMarker }
 }
 
+function Get-WudTaskFolder {
+    param(
+        [Parameter(Mandatory = $true)]$ScheduleService,
+        [Parameter(Mandatory = $true)]$RootFolder
+    )
+    # The Schedule.Service COM API rejects a folder lookup with a trailing
+    # slash on current Windows 11 builds even though ScheduledTasks cmdlets
+    # require that slash in -TaskPath. Resume creates the folder first; a
+    # subsequent recorder lookup must therefore use the canonical COM path.
+    $comPath = '\Win11UpgradeDiag'
+    try {
+        return [pscustomobject]@{ Folder = $ScheduleService.GetFolder($comPath); Created = $false }
+    }
+    catch {
+        try {
+            return [pscustomobject]@{ Folder = $RootFolder.CreateFolder('Win11UpgradeDiag'); Created = $true }
+        }
+        catch {
+            # A concurrent/preceding registration can win between lookup and
+            # creation. Re-open once so ERROR_ALREADY_EXISTS is idempotent;
+            # any genuine access or COM failure remains fatal.
+            return [pscustomobject]@{ Folder = $ScheduleService.GetFolder($comPath); Created = $false }
+        }
+    }
+}
+
 function Install-WudResumeTask {
     param($Context, [string]$RuntimePath)
     $taskName = "Resume-$($Context.RunId)"
@@ -192,8 +218,8 @@ function Install-WudResumeTask {
     $scheduleService = New-Object -ComObject 'Schedule.Service'
     $scheduleService.Connect()
     $rootFolder = $scheduleService.GetFolder('\')
-    try { $null = $scheduleService.GetFolder($taskPath) }
-    catch { $null = $rootFolder.CreateFolder('Win11UpgradeDiag'); $folderCreated = $true }
+    $folderResult = Get-WudTaskFolder -ScheduleService $scheduleService -RootFolder $rootFolder
+    $folderCreated = [bool]$folderResult.Created
     $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $script = Join-Path $RuntimePath 'Invoke-Win11UpgradeDiag.ps1'
     $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode Resume -RunId "{1}" -NoOpen -DelaySeconds 180' -f $script, $Context.RunId
@@ -217,8 +243,7 @@ function Install-WudRecorderTask {
     $scheduleService = New-Object -ComObject 'Schedule.Service'
     $scheduleService.Connect()
     $rootFolder = $scheduleService.GetFolder('\')
-    try { $null = $scheduleService.GetFolder($taskPath) }
-    catch { $null = $rootFolder.CreateFolder('Win11UpgradeDiag') }
+    $null = Get-WudTaskFolder -ScheduleService $scheduleService -RootFolder $rootFolder
     $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $script = Join-Path $RuntimePath 'Watch-Win11Upgrade.ps1'
     $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -RunPath "{1}" -TargetVersion "{2}" -TargetBuild {3} -IntervalSeconds {4} -ProgressBucketSize {5} -MaximumCheckpoints {6} -MaximumCheckpointFileBytes {7} -MaximumCheckpointBytes {8}' -f

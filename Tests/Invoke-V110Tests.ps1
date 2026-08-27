@@ -16,6 +16,7 @@ function Assert-WudV110 {
 }
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("Win11UpgradeDiag-v110-tests-{0}" -f [Guid]::NewGuid().ToString('N'))
+$longArchiveSource = $null
 try {
     $context = New-WudRunContext -ToolRoot $toolRoot -ToolVersion '1.1.0-test' -RunId 'v110-fixture' -RunPath (Join-Path $testRoot 'run') -OutputPath (Join-Path $testRoot 'output') -Mode 'Forensic' -PhaseLabel 'Forensic' -TargetVersion '25H2' -CopyTo $null -MediaPath $null -AcceptWindowsEula $false -IncludeLargeDumps $false -NoInternet $true -NoSetupHooks $true -ArmDays 30
     $identity = [pscustomobject][ordered]@{
@@ -138,6 +139,8 @@ try {
     $longIoEvidencePath = if (Test-WudIsWindows) { ConvertTo-WudExtendedLengthPath -Path $longEvidencePath } else { $longEvidencePath }
     [IO.File]::WriteAllText($longIoEvidencePath, 'long-path-evidence', (New-Object Text.UTF8Encoding($false)))
     Assert-WudV110 ((Get-WudFileHashSafe -Path $longEvidencePath) -eq 'c98747a6da0a27de1de71da305409c9f694a5fc15bbb0ca98475f49960ebfe32') 'Long evidence paths can be opened and hashed'
+    $longInventory = @(Get-WudFileInventory -RootPath $longArchiveSource -Context $collectorContext)
+    Assert-WudV110 ($longInventory.Count -eq 1 -and $longInventory[0].Sha256 -eq 'c98747a6da0a27de1de71da305409c9f694a5fc15bbb0ca98475f49960ebfe32') 'Long evidence paths are included in the evidence manifest'
     $longArchivePath = Join-Path $testRoot 'long-evidence.zip'
     New-WudEvidenceArchive -SourcePath $longArchiveSource -DestinationPath $longArchivePath -Context $collectorContext
     $longArchive = [IO.Compression.ZipFile]::OpenRead($longArchivePath)
@@ -145,11 +148,18 @@ try {
     finally { $longArchive.Dispose() }
 
     $reportSource = Get-Content -LiteralPath (Join-Path $toolRoot 'Modules/Report.psm1') -Raw
-    Assert-WudV110 ($reportSource.IndexOf('$sourceStream = Open-WudFileReadStream') -lt $reportSource.IndexOf('$entry = $archive.CreateEntry')) 'Archive source opens before its ZIP entry is created'
+    Assert-WudV110 ($reportSource -match 'Get-WudFileTreeSafe' -and $reportSource.IndexOf('$sourceStream = Open-WudFileReadStream') -lt $reportSource.IndexOf('$entry = $archive.CreateEntry')) 'Archive safely enumerates and opens a source before its ZIP entry is created'
     Assert-WudV110 ($reportSource -match 'ArchiveLongPathReadFailed' -and $reportSource -match 'ArchiveReparsePointSkipped' -and $reportSource -match 'ArchiveSourceMissing') 'Archive omissions receive factual diagnostic classifications'
 
     Write-Host 'All v1.1 fixture tests passed.' -ForegroundColor Cyan
 }
 finally {
+    if ($longArchiveSource -and (Test-WudIsWindows)) {
+        try {
+            $longArchiveIo = ConvertTo-WudExtendedLengthPath -Path $longArchiveSource
+            if ([IO.Directory]::Exists($longArchiveIo)) { [IO.Directory]::Delete($longArchiveIo, $true) }
+        }
+        catch { Write-Warning ("Long-path fixture cleanup was incomplete: {0}" -f $_.Exception.Message) }
+    }
     if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
 }
