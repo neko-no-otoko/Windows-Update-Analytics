@@ -40,11 +40,17 @@ jobs:
       - name: Run cross-platform regression tests
         shell: pwsh
         run: |
-          ./Tests/Invoke-V110Tests.ps1
-          ./Tests/Invoke-V200Tests.ps1
-          ./Tests/Invoke-V210Tests.ps1
-          ./Tests/Invoke-V212Tests.ps1
-          ./Tests/Invoke-V220Tests.ps1
+          $tests = @(
+            './Tests/Invoke-V110Tests.ps1',
+            './Tests/Invoke-V200Tests.ps1',
+            './Tests/Invoke-V210Tests.ps1',
+            './Tests/Invoke-V212Tests.ps1',
+            './Tests/Invoke-V220Tests.ps1'
+          )
+          foreach ($test in $tests) {
+            & pwsh -NoProfile -File $test
+            if ($LASTEXITCODE -ne 0) { throw "Regression test failed: $test (exit $LASTEXITCODE)" }
+          }
 
       - name: Publish x64 and ARM64 single-file applications
         shell: pwsh
