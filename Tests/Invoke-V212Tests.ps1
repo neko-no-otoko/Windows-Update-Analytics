@@ -60,7 +60,7 @@ if ($env:OS -eq 'Windows_NT') {
         $preparePath = Join-Path $bundleRoot 'Prepare-Win11UpgradeDiag.cmd'
         $checkOutput = @(& $preparePath '-Check' 2>&1)
         $checkExit = $LASTEXITCODE
-        Assert-WudV212 ($checkExit -eq 10 -and ($checkOutput -join ' ') -match 'download markers detected') 'Check mode detects recursively marked scripts without loading them'
+        Assert-WudV212 ($checkExit -eq 10 -and ($checkOutput -join ' ') -match 'download markers detected') ("Check mode detects recursively marked scripts without loading them. Exit={0}; Output={1}" -f $checkExit, ($checkOutput -join ' | '))
 
         $applyOutput = @(& $preparePath '-Apply' 2>&1)
         $applyExit = $LASTEXITCODE
