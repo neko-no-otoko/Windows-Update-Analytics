@@ -175,7 +175,6 @@ function New-WudRunContext {
     $null = New-WudDirectory -Path $RunPath
     $evidencePath = New-WudDirectory -Path (Join-Path $RunPath 'Evidence')
     $snapshotPath = New-WudDirectory -Path (Join-Path $evidencePath $PhaseLabel)
-    $null = New-WudDirectory -Path $OutputPath
 
     return [pscustomobject][ordered]@{
         SchemaVersion       = 2

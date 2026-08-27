@@ -21,6 +21,11 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 - [ ] Extracted ZIP contains all documented runtime, data, assets, tests, and docs.
 - [ ] `BundleManifest.sha256` verifies on a pristine extraction.
 - [ ] Editing a covered module causes exit `40` before collection.
+- [ ] Adding `Zone.Identifier` to the entry point and every `.psm1` is detected before module loading; one confirmed preparation removes every marker and the launcher continues.
+- [ ] Cancelling preparation changes no marker and starts no diagnostic run.
+- [ ] `Prepare-Win11UpgradeDiag.cmd -Apply` refuses to remove markers when any manifested file has changed.
+- [ ] Group Policy `RemoteSigned` succeeds after preparation; `AllSigned` and `Restricted` stop with an explicit signed-deployment message and no policy change.
+- [ ] AppLocker or WDAC denial remains a visible policy block; the launcher does not attempt a bypass.
 - [ ] Double-click launcher selects 64-bit Windows PowerShell 5.1 and prompts for UAC.
 - [ ] Process execution-policy bypass does not alter LocalMachine or CurrentUser policy.
 - [ ] Non-admin direct invocation exits `50` with a useful message.
@@ -47,9 +52,13 @@ Test Pro and Enterprise where deployment policy differs. Include Microsoft Updat
 ## Persistence and idempotency
 
 - [ ] A new interactive run without `-OutputPath` finalizes every report, export, log, archive, and manifest beneath `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`.
-- [ ] A SYSTEM resume uses the exact same saved Public Documents run folder as its preflight pass.
+- [ ] A SYSTEM resume creates the final report at the exact output path saved by Preflight.
 - [ ] An explicit local `-OutputPath` overrides the Public Documents default, while an older armed run retains its previously saved path.
 - [ ] Preflight copies runtime/state to ProgramData and applies the expected restricted ACL.
+- [ ] GUI starts without parameters, requests UAC, extracts its embedded payload, and verifies `BundleManifest.sha256` before launching PowerShell.
+- [ ] Preflight creates `State\preflight-status.json` with `FinalReportCreated=false` and does not create the Public Documents result folder or any final report/archive artifact.
+- [ ] GUI verifies `ActiveRun.json` and displays **Monitoring is armed** instead of offering or opening a baseline report.
+- [ ] x64 GUI runs on x64 Windows 11 and the ARM64 build runs on native ARM64 Windows 11.
 - [ ] `Recorder-<RunId>` starts immediately, samples at the configured 60-second interval, and restarts after task/process failure.
 - [ ] Each JSONL sample is independently parseable; a deliberately truncated final line is reported without losing prior records.
 - [ ] State/build/boot/10-percent-progress changes create bounded native checkpoints and unchanged samples do not create duplicate checkpoints.

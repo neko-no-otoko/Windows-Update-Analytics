@@ -1,0 +1,59 @@
+name: Build Windows GUI executables
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Gui/**"
+      - "Build/**"
+      - "Modules/**"
+      - "Data/**"
+      - "Assets/**"
+      - "Tests/**"
+      - "docs/**"
+      - "*.ps1"
+      - "*.cmd"
+      - "*.md"
+      - "VERSION"
+      - "BundleManifest.sha256"
+      - ".github/workflows/build-windows-exe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Verify embedded payload manifest
+        shell: pwsh
+        run: ./Build/Update-BundleManifest.ps1 -Verify
+
+      - name: Run cross-platform regression tests
+        shell: pwsh
+        run: |
+          ./Tests/Invoke-V110Tests.ps1
+          ./Tests/Invoke-V200Tests.ps1
+          ./Tests/Invoke-V210Tests.ps1
+          ./Tests/Invoke-V212Tests.ps1
+          ./Tests/Invoke-V220Tests.ps1
+
+      - name: Publish x64 and ARM64 single-file applications
+        shell: pwsh
+        run: ./Build/Build-WindowsExecutables.ps1 -RuntimeIdentifiers win-x64,win-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WindowsUpdateAnalytics-2.2.0
+          path: |
+            dist/*.exe
+            dist/*.json
+            dist/*.sha256
+          if-no-files-found: error

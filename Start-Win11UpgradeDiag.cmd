@@ -23,6 +23,34 @@ if not exist "%WUD_PS%" (
 >>"%WUD_BOOTSTRAP%" echo %DATE% %TIME% [CMD] Launcher started from "%WUD_ROOT%".
 echo Win11UpgradeDiag launcher log: "%WUD_BOOTSTRAP%"
 
+if not exist "%WUD_ROOT%Prepare-Win11UpgradeDiag.cmd" goto WUD_LAUNCH
+
+call "%WUD_ROOT%Prepare-Win11UpgradeDiag.cmd" -Check
+set "WUD_PREP_EXIT=%ERRORLEVEL%"
+if "%WUD_PREP_EXIT%"=="10" goto WUD_PREP_REQUIRED
+if not "%WUD_PREP_EXIT%"=="0" goto WUD_PREP_FAILED
+goto WUD_LAUNCH
+
+:WUD_PREP_REQUIRED
+echo.
+echo The extracted bundle carries Windows download-security markers.
+echo Win11UpgradeDiag can remove those markers from this verified folder only.
+call "%WUD_ROOT%Prepare-Win11UpgradeDiag.cmd"
+set "WUD_PREP_EXIT=%ERRORLEVEL%"
+if not "%WUD_PREP_EXIT%"=="0" goto WUD_PREP_FAILED
+goto WUD_LAUNCH
+
+:WUD_PREP_FAILED
+>>"%WUD_BOOTSTRAP%" echo %DATE% %TIME% [ERROR] Bundle preparation stopped with exit code %WUD_PREP_EXIT%.
+echo.
+echo Win11UpgradeDiag did not start because bundle preparation returned code %WUD_PREP_EXIT%.
+echo If AllSigned, WDAC, or AppLocker is enforced, use an organization-signed and allowlisted build.
+echo Review the launcher log: "%WUD_BOOTSTRAP%"
+pause
+exit /b %WUD_PREP_EXIT%
+
+:WUD_LAUNCH
+
 "%WUD_PS%" -NoProfile -ExecutionPolicy Bypass -File "%WUD_ROOT%Invoke-Win11UpgradeDiag.ps1" -BootstrapLogPath "%WUD_BOOTSTRAP%" %*
 
 set "WUD_EXIT=%ERRORLEVEL%"

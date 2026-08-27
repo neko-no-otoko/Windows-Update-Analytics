@@ -4,28 +4,29 @@
 
 ### Before the managed upgrade
 
-1. Copy and extract the bundle to a local folder.
-2. Launch `Start-Win11UpgradeDiag.cmd -Mode Preflight` as the intended technician.
-3. Open the run folder under `%PUBLIC%\Documents`, confirm that the fact report was produced, and confirm that the console reported `Persistent 60-second progress recorder started`. Exit `0` is not a prediction that the upgrade will succeed.
-4. Leave `%ProgramData%\Win11UpgradeDiag` in place while the organization's existing deployment process offers, downloads, and installs the upgrade.
-5. After success or rollback, allow the startup task to run. It waits three minutes by default so services and log writers can settle.
-6. Sign in as a technician and review the refreshed output. Use `Report.html` for fast verification and `ReviewBundle.zip` for approved external review. If `-CopyTo` was supplied, invoke `Auto` once interactively if a SYSTEM resume could not reach the share.
+1. Copy the architecture-appropriate `WindowsUpdateAnalytics-2.2.0-win-*.exe` to a local folder.
+2. Launch it as the intended technician and accept UAC.
+3. Review the settings and select **Start monitoring**.
+4. Wait for the GUI to verify **Monitoring is armed**. The baseline remains in ProgramData and no final report is published. Exit `0` is not a prediction that the upgrade will succeed.
+5. Leave `%ProgramData%\Win11UpgradeDiag` in place while the organization's existing deployment process offers, downloads, and installs the upgrade. The GUI can be closed; SYSTEM tasks own the persistent lifecycle.
+6. After success or rollback, allow the startup task to run. It waits three minutes by default so services and log writers can settle.
+7. Sign in as a technician and open the completed report from the GUI. Use `Report.html` for fast verification and `ReviewBundle.zip` for approved external review. If a requested UNC copy was deferred under SYSTEM, reopen the GUI so an interactive token can complete the copy.
 
 Win11UpgradeDiag does not launch or schedule the operating-system upgrade.
 
 ### After an attempted upgrade
 
-Run `Start-Win11UpgradeDiag.cmd -Mode Forensic`. This captures remaining Panther, Rollback, NewOS, Windows.old, Windows Update, servicing, event, crash, application, driver, hardware, and policy evidence without adding persistence. Initial imaging and ambiguous setup logs remain visible in the evidence index but cannot enter the upgrade timeline without passing every Windows Update gate.
+Open the GUI and select **One-time forensic report**. This captures remaining Panther, Rollback, NewOS, Windows.old, Windows Update, servicing, event, crash, application, driver, hardware, and policy evidence without adding persistence. Initial imaging and ambiguous setup logs remain visible in the evidence index but cannot enter the upgrade timeline without passing every Windows Update gate.
 
 Collect as soon as practical. Windows servicing, Disk Cleanup, Storage Sense, another setup attempt, or log rollover can remove high-value evidence.
 
 ### Cancel an armed run
 
-Run `Start-Win11UpgradeDiag.cmd -Mode Disarm` elevated. It removes the run's owned scheduled task and hook scripts and safely restores SetupConfig. It deliberately retains the staged evidence, state, reports, and logs.
+Open the GUI and select **Stop monitoring**. It removes the run's owned scheduled task and hook scripts and safely restores SetupConfig. It deliberately retains the staged evidence and state and does not create a report.
 
 ### Stop recording and finalize now
 
-Run `Start-Win11UpgradeDiag.cmd -Mode Finalize` elevated. This is an explicit operator override: it stops the active recorder, waits for its per-run lock, writes a forced `OperatorFinalizationBoundary` sample and checkpoint, performs the full passive-first collection and report pipeline, then removes the run's owned tasks/hooks and restores SetupConfig.
+Open the GUI and select **Finalize and build report**. This is an explicit operator override: it stops the active recorder, waits for its per-run lock, writes a forced `OperatorFinalizationBoundary` sample and checkpoint, performs the full passive-first collection and report pipeline, then removes the run's owned tasks/hooks and restores SetupConfig.
 
 `Finalize` records the requesting Windows identity, whether the arm period had expired, whether Setup was active, and the complete automatic-terminal-signal evaluation in `State\operator-finalize.json`. Those observations are included in the final evidence. They do not alter the outcome model. If no success, rollback, or failure is directly observed, the report says so; it does not turn the operator action into a successful-upgrade claim.
 
@@ -54,6 +55,8 @@ An armed run contains:
 
 The recorder appends `Evidence\Recorder\ProgressSamples.jsonl` every 60 seconds. A state, build, boot, or Setup-progress-bucket boundary creates `Evidence\Recorder\Checkpoints\<timestamp>-<state>`. The setup hook scripts only write an outcome marker and request the resume task. They return immediately and do not wait for collection.
 
+Preflight writes `State\preflight-status.json` after recorder startup is attempted. The receipt contains `FinalReportCreated=false`; it is a committed armed-state record, not an HTML report. No Public Documents output folder is created until automatic Resume, explicit Finalize, or Forensic collection runs the final artifact pipeline.
+
 An ordinary reboot is not treated as an upgrade outcome. The recorder restarts and its boot identity changes, but resume finalization still requires a target-build transition, an owned PostOOBE/PostRollback marker, or qualifying setup/rollback evidence newer than the preflight baseline. If Setup is still running or none of those signals exists, the resume task exits cleanly and remains armed for a later trigger. Only an explicit `-Mode Finalize` request bypasses those automatic gates, and that override is written into the evidence before the recorder stops.
 
 The staging ACL is restricted to SYSTEM, built-in Administrators, and the initiating technician SID. The tool does not store a password, token, or share credential.
@@ -73,7 +76,7 @@ Use `-NoSetupHooks` when another deployment product owns SetupConfig or local ch
 
 Collection always stages to ProgramData first. By default, final artifacts are written to `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`, regardless of whether the final pass runs under an interactive administrator or SYSTEM. This keeps `Report.html`, `Collector.log`, normalized exports, `ReviewBundle.zip`, `Evidence.zip`, and their integrity manifests together in a predictable machine-wide location.
 
-`-OutputPath` must be a local folder and explicitly overrides the Public Documents parent for a newly created run. A resumed or disarmed run always honors its saved output path, including for runs created by an older tool version, so preflight and follow-up artifacts are not split across folders.
+`-OutputPath` must be a local folder and explicitly overrides the Public Documents parent for a newly created run. Preflight saves that future destination without creating it. A resumed run always honors the saved path, including for runs created by an older tool version.
 
 `-CopyTo` is a post-finalization convenience, not the authoritative storage location. It runs only when an interactive technician token is available and relies on that user's existing access. Failures are logged and do not discard the local result. Use the resulting `Checksums.sha256` at the destination to verify transfer integrity.
 
@@ -135,9 +138,17 @@ Run the launcher with `-Mode Auto` interactively to evaluate the saved run, use 
 
 Re-extract a known-good bundle. Do not edit a runtime file without regenerating `BundleManifest.sha256`. Integrity failure exits `40` before modules or collectors run.
 
+### A script or module is reported as not digitally signed
+
+Do not unblock five or more files individually. Run `Start-Win11UpgradeDiag.cmd` normally. Version 2.1.2 checks the extracted folder before loading PowerShell files. When Internet-zone markers are present, it verifies every manifested file and asks once for `UNBLOCK` confirmation, then removes only those markers and continues.
+
+You can prepare a folder without starting collection by double-clicking `Prepare-Win11UpgradeDiag.cmd`. For managed deployment, `Prepare-Win11UpgradeDiag.cmd -Apply` performs the same manifest-first operation without an interactive confirmation; use that only after your distribution system has independently validated the package source and release ZIP hash.
+
+Unblocking the ZIP before extraction is not treated as sufficient because some transfer and extraction paths attach markers to the extracted files anyway. If the helper reports Group Policy `AllSigned` or `Restricted`, or the prepared bundle is still denied by AppLocker or Windows Defender Application Control, stop: removing `Zone.Identifier` cannot satisfy that control. Use an organization-signed and allowlisted build rather than changing or bypassing endpoint policy.
+
 ### Launcher exited before a report was created
 
-Open `%PUBLIC%\Documents\Win11UpgradeDiag-Launcher.log`. Version 2.1.1 and later append the CMD start, Windows PowerShell version, process ID, elevation state, UAC handoff result, integrity or module-load failure, and any fatal startup detail there before `Collector.log` exists. Use the newest timestamped block. If a run path was created, also inspect its `Collector.log` and `Failure.txt`.
+Open `%PUBLIC%\Documents\Win11UpgradeDiag-Launcher.log`. Version 2.1.1 and later append the CMD start, Windows PowerShell version, process ID, elevation state, UAC handoff result, integrity or module-load failure, and any fatal startup detail there before `Collector.log` exists. Version 2.1.2 also records a failed or declined bundle-preparation exit. Use the newest timestamped block. If a run path was created, also inspect its `Collector.log` and `Failure.txt`.
 
 ### SetupDiag was not used
 

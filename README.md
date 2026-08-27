@@ -1,18 +1,21 @@
 # Windows Update Analytics
 
-Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.1.1 starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture automatically or on an explicit operator request. It normalizes direct facts, applies transparent evidence-scope gates, and produces an offline HTML report plus a compact `ReviewBundle.zip` designed for drag-and-drop human or external AI review.
+Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.2.0 adds the self-contained `WindowsUpdateAnalytics-2.2.0-win-x64.exe` and `WindowsUpdateAnalytics-2.2.0-win-arm64.exe` operator applications. The GUI starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture automatically or on an explicit operator request.
 
 The target map is optimized for Windows 11 23H2 to 25H2. The tool treats that path as a full feature upgrade; it never starts Windows Setup, installs updates, bypasses safeguards, applies repairs, uploads evidence, or asserts a root cause.
 
 ## Quick start
 
-1. Extract the entire bundle to a local folder. Do not run it from inside the ZIP.
-2. Double-click `Start-Win11UpgradeDiag.cmd` and approve the UAC prompt.
-3. Allow the initial collection to finish. Active health checks can make this take from several minutes to more than an hour on a slow or unhealthy machine. When the report completes, the persistent recorder is running.
-4. Leave the run armed while the normal management platform offers, downloads, and installs the update.
-5. Open the new `Win11UpgradeDiag-<Computer>-<RunId>` folder under `%PUBLIC%\Documents` and review `Report.html`. For deeper review, drag `ReviewBundle.zip` into the approved analysis utility. The final collection runs automatically after success or rollback.
+1. Copy the executable matching the device architecture to a local folder. Most devices use `WindowsUpdateAnalytics-2.2.0-win-x64.exe`; native Windows on ARM devices can use the ARM64 build.
+2. Double-click the executable and approve the UAC prompt.
+3. Review the visible settings, then select **Start monitoring**.
+4. Allow the baseline collection to finish. Active health checks can take from several minutes to more than an hour on a slow or unhealthy machine.
+5. Confirm the GUI says **Monitoring is armed**. Preflight deliberately does not create a report because the monitored process is not finished.
+6. Leave the run armed while the normal management platform offers, downloads, and installs the update. The recorder continues as SYSTEM and survives reboot; the GUI does not need to remain open.
+7. The final report is created automatically after a qualifying terminal outcome. To end at a technician-chosen point, reopen the executable and select **Finalize and build report**.
+8. Open `Report.html` from the GUI. For deeper review, drag `ReviewBundle.zip` into the approved analysis utility.
 
-By default, one-click `Auto` mode starts a preflight run when there is no armed run and no recent upgrade evidence. When a recent attempt is already visible, it performs an after-the-fact forensic run. An armed run is resumed using its saved state.
+The GUI exposes each lifecycle action directly and does not require parameters. The PowerShell and CMD interfaces remain in the embedded payload for scheduled SYSTEM resume and advanced automation, but technicians do not need to invoke them.
 
 ## Requirements
 
@@ -20,12 +23,25 @@ By default, one-click `Auto` mode starts a preflight run when there is no armed 
 - Local administrator rights
 - 64-bit Windows PowerShell 5.1 or later
 - At least 1 GB of temporary staging space; substantially more is recommended when logs or dumps are large
-- A local NTFS location for the extracted bundle and ProgramData staging
+- A local path for the executable and NTFS ProgramData staging
 - Optional internet access only for Microsoft SetupDiag retrieval and diagnostic endpoint tests
 
-The bundle remains intentionally unsigned and hash-manifested. The launcher uses a process-scoped execution-policy bypass; it does not change the machine execution policy. Verify `BundleManifest.sha256` before distribution if the transport channel is not trusted.
+The GUI embeds the hash-manifested PowerShell engine and extracts it into a versioned `%ProgramData%\WindowsUpdateAnalytics\Runtime` folder. Files created from embedded resources do not inherit a ZIP's `Zone.Identifier`, eliminating the need for technicians to unblock individual modules. The GUI verifies every extracted payload file before execution.
 
-## Command interface
+The executable is not a bypass for Group Policy `AllSigned` or `Restricted`, AppLocker, Windows Defender Application Control, Smart App Control, or another application-control product. Signing only the EXE also does not satisfy `AllSigned` for the embedded PowerShell engine. Those environments require an organization-trusted code-signing certificate and an allowlisted release whose executable and PowerShell payload are signed as required by policy.
+
+## GUI actions
+
+| Action | Behavior |
+|---|---|
+| **Start monitoring** | Collects the baseline, commits it under ProgramData, arms SYSTEM monitoring, and verifies recorder startup. It deliberately creates no final report. |
+| **Finalize and build report** | Stops the recorder, takes a final boundary checkpoint, runs final collection, creates the report package, and removes owned persistence. |
+| **One-time forensic report** | Creates an after-the-fact report from evidence currently available without arming monitoring. |
+| **Stop monitoring** | Removes owned tasks and hooks while retaining evidence. It does not create a report. |
+| **Open latest report** | Opens the newest completed `Report.html`; it never treats a Preflight receipt as a report. |
+| **Open case folder** | Opens the protected ProgramData case for the currently armed run. |
+
+## Advanced command interface
 
 The launcher accepts the same arguments as the PowerShell entry point:
 
@@ -72,7 +88,7 @@ Media scanning is optional. It requires `-AcceptWindowsEula`, checks the media a
 | Mode | Behavior |
 |---|---|
 | `Auto` | Uses saved state, current build, and recent setup/rollback evidence to select preflight, resume, or forensic behavior. |
-| `Preflight` | Collects a baseline and arms a temporary SYSTEM follow-up task and guarded SetupConfig hooks. It does not predict upgrade success. |
+| `Preflight` | Collects a baseline, verifies recorder startup, and arms temporary SYSTEM follow-up. It creates `State\preflight-status.json`, not a final report. |
 | `Resume` | Continues a previously armed run after a reboot, produces pre/post comparison, then removes owned persistence. Normally invoked automatically. |
 | `Finalize` | Explicitly stops an armed recorder, records the operator override, takes a final boundary checkpoint, produces the full report, and removes owned persistence. It does not require automatic terminal evidence. |
 | `Forensic` | Performs a one-shot investigation of the evidence currently present on the device without arming follow-up. |
@@ -104,9 +120,11 @@ The tool can run these read-only diagnostics with bounded timeouts:
 
 It does **not** run RestoreHealth, SFC repair, CHKDSK repair, update-cache deletion, update installation, driver removal, safeguard bypass, disk/partition changes, ownership changes, or ACL changes to force access.
 
-## Final artifacts
+## Preflight receipt and final artifacts
 
-Every finalized run is designed to contain:
+Preflight writes `%ProgramData%\Win11UpgradeDiag\Runs\<RunId>\State\preflight-status.json`. The receipt records the run ID, target, baseline completion, expiry, recorder start result, collector coverage, material gaps, and `FinalReportCreated=false`. Preflight does not create the public output directory, `Report.html`, `Evidence.zip`, `ReviewBundle.zip`, or artifact manifests.
+
+Every automatically resumed, explicitly finalized, or forensic run is designed to contain:
 
 | Artifact | Purpose |
 |---|---|
@@ -134,10 +152,10 @@ Locked, cleaned, timed-out, skipped, or oversized sources are recorded as gaps. 
 
 | Code | Meaning |
 |---:|---|
-| `0` | Complete fact report; no source-reported failed/rollback outcome selected. This is not a readiness guarantee. |
+| `0` | Preflight monitoring armed successfully, or a complete fact report without a failed/rollback outcome. This is not a readiness guarantee. |
 | `10` | Reserved for a complete report with a direct attention status. |
 | `20` | Source-reported failed Windows Update attempt or validated rollback outcome. |
-| `30` | Report produced but materially incomplete. |
+| `30` | Preflight was armed with a material baseline/recorder limitation, or a report was produced but materially incomplete. |
 | `40` | Fatal tool failure; no valid report. |
 | `50` | Unsupported OS, PowerShell, or privilege state. |
 
@@ -159,6 +177,7 @@ Outcome is no longer a single ambiguous inference. `Summary.json` separately rep
 ## Files and state
 
 - Persistent runtime and runs: `%ProgramData%\Win11UpgradeDiag`
+- Embedded GUI payload runtime: `%ProgramData%\WindowsUpdateAnalytics\Runtime\2.2.0`
 - Per-run evidence: `%ProgramData%\Win11UpgradeDiag\Runs\<RunId>`
 - Default finalized result: `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`
 - Early launcher/UAC diagnostic: `%PUBLIC%\Documents\Win11UpgradeDiag-Launcher.log`
@@ -177,6 +196,8 @@ pwsh -NoProfile -File .\Tests\Invoke-FixtureTests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V110Tests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V200Tests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V210Tests.ps1
+pwsh -NoProfile -File .\Tests\Invoke-V212Tests.ps1
+pwsh -NoProfile -File .\Tests\Invoke-V220Tests.ps1
 ```
 
 If Pester 5 is installed, run:

@@ -138,7 +138,7 @@ function Install-WudRuntimeCopy {
     $sourceFull = [IO.Path]::GetFullPath($Context.ToolRoot).TrimEnd('\')
     $runtimeFull = [IO.Path]::GetFullPath($runtimeRoot).TrimEnd('\')
     if ($sourceFull -eq $runtimeFull) { return $runtimeRoot }
-    foreach ($file in @('Invoke-Win11UpgradeDiag.ps1', 'Watch-Win11Upgrade.ps1', 'Start-Win11UpgradeDiag.cmd', 'BundleManifest.sha256', 'VERSION', 'README.md', 'CHANGELOG.md', 'NOTICE.md')) {
+    foreach ($file in @('Invoke-Win11UpgradeDiag.ps1', 'Watch-Win11Upgrade.ps1', 'Start-Win11UpgradeDiag.cmd', 'Prepare-Win11UpgradeDiag.cmd', 'BundleManifest.sha256', 'VERSION', 'README.md', 'CHANGELOG.md', 'NOTICE.md')) {
         $source = Join-Path $Context.ToolRoot $file
         if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $runtimeRoot $file) -Force }
     }
@@ -268,7 +268,35 @@ function Start-WudRecorderTask {
         $stopMarker = Join-Path $State.RunPath 'State\recorder.stop'
         if (Test-Path -LiteralPath $stopMarker) { Remove-Item -LiteralPath $stopMarker -Force -ErrorAction Stop }
         Start-ScheduledTask -TaskName $recorderTask.TaskName -TaskPath $recorderTask.TaskPath -ErrorAction Stop
-        return [pscustomobject]@{ Status = 'Started'; Error = $null }
+        # Start-ScheduledTask confirms only that Task Scheduler accepted the
+        # request. Verify that the task reached Running and that the recorder
+        # process owns its exclusive lock before declaring monitoring healthy.
+        $lockPath = Join-Path $State.RunPath 'State\recorder.lock'
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        $taskState = $null
+        $lockHeld = $false
+        do {
+            try { $taskState = [string](Get-ScheduledTask -TaskName $recorderTask.TaskName -TaskPath $recorderTask.TaskPath -ErrorAction Stop).State }
+            catch { $taskState = 'QueryFailed' }
+            $probe = $null
+            $lockHeld = $false
+            if (Test-Path -LiteralPath $lockPath) {
+                try { $probe = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+                catch { $lockHeld = $true }
+                finally { if ($probe) { $probe.Dispose() } }
+            }
+            if ($taskState -eq 'Running' -and $lockHeld) {
+                return [pscustomobject]@{ Status = 'Started'; Error = $null; TaskState = $taskState; RecorderLockHeld = $true; VerifiedUtc = [DateTime]::UtcNow.ToString('o') }
+            }
+            Start-Sleep -Milliseconds 500
+        } while ([DateTime]::UtcNow -lt $deadline)
+        return [pscustomobject]@{
+            Status = 'StartUnverified'
+            Error = "Task Scheduler accepted the recorder start, but Running state plus exclusive recorder-lock ownership was not observed within 15 seconds. LastTaskState=$taskState; RecorderLockHeld=$lockHeld"
+            TaskState = $taskState
+            RecorderLockHeld = $lockHeld
+            VerifiedUtc = [DateTime]::UtcNow.ToString('o')
+        }
     }
     catch { return [pscustomobject]@{ Status = 'StartFailed'; Error = (Get-WudErrorDetail -ErrorRecord $_) } }
 }

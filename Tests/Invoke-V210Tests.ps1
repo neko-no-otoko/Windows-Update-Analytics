@@ -24,7 +24,8 @@ try {
     $readmeSource = Get-Content -LiteralPath (Join-Path $toolRoot 'README.md') -Raw
 
     Assert-WudV210 ($entrySource -match "ValidateSet\('Auto', 'Preflight', 'Resume', 'Finalize', 'Forensic', 'Disarm'\)") 'Finalize is a public command mode'
-    Assert-WudV210 ($entrySource -match '\$toolVersion\s*=\s*''2\.1\.1''' -and (Get-Content -LiteralPath (Join-Path $toolRoot 'VERSION') -Raw).Trim() -eq '2.1.1') 'Tool and package versions identify v2.1.1'
+    $packageVersion = (Get-Content -LiteralPath (Join-Path $toolRoot 'VERSION') -Raw).Trim()
+    Assert-WudV210 ([version]$packageVersion -ge [version]'2.1.0' -and $entrySource -match ('\$toolVersion\s*=\s*''' + [regex]::Escape($packageVersion) + '''')) 'Current tool and package versions retain the v2.1 maintenance contracts'
     Assert-WudV210 ($entrySource -match 'if \(\$Mode -eq ''Resume''\)[\s\S]+?Test-WudSetupInProgress[\s\S]+?Get-WudResumeSignal') 'Automatic Resume retains its Setup-active and terminal-signal gates'
     Assert-WudV210 ($entrySource -match 'operator-finalize\.json' -and $entrySource -match 'SetupActiveAtRequest' -and $entrySource -match 'AutomaticTerminalSignalPresent') 'Operator finalization records its explicit override and gate observations'
     Assert-WudV210 ($entrySource -match '''OperatorFinalizationBoundary''' -and $entrySource -match '\$Mode -in @\(''Resume'', ''Finalize''\)') 'Finalize shares the stop, final-collection, and cleanup lifecycle with Resume'

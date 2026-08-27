@@ -34,6 +34,12 @@ Administrative access is required because Windows Setup logs, event export, syst
 
 It supplies `-ExecutionPolicy Bypass` only to the child PowerShell process. It does not call `Set-ExecutionPolicy` or persist a policy change.
 
+Before loading any script or module, the CMD launcher invokes `Prepare-Win11UpgradeDiag.cmd -Check`. This inline, script-free PowerShell check verifies every entry in `BundleManifest.sha256`, inspects the extracted folder for `Zone.Identifier` alternate data streams, and reads the effective policy scopes. If markers exist, the operator receives one explicit confirmation prompt. Only after the operator types `UNBLOCK` does the helper call `Unblock-File` on files beneath the verified bundle root and confirm that the markers are gone.
+
+This is equivalent to the File Explorer **Unblock** action, applied to the complete extracted bundle. It does not change file contents, machine or user execution policy, Group Policy, AppLocker, Windows Defender Application Control, Defender settings, or any system-wide trust list. It is intended only for the common `RemoteSigned` plus Internet-zone-marker case. If `MachinePolicy` or `UserPolicy` enforces `AllSigned` or `Restricted`, preparation stops with exit code `50`; use a trusted enterprise code-signing and application-control deployment path instead.
+
+The integrity manifest detects a file that changed relative to the distributed bundle, but because this initial package is unsigned, the manifest does not prove publisher identity. Obtain the ZIP and its published SHA-256 through an approved channel before accepting the preparation prompt.
+
 ## Staging ACL
 
 The ProgramData runtime and run folders are restricted to:
@@ -47,6 +53,8 @@ The collector does not take ownership of protected sources or loosen their ACLs.
 ## Cross-reboot changes
 
 Preflight mode can create temporary SYSTEM recorder and resume tasks plus guarded SetupConfig entries. Ownership metadata and original file bytes are saved in run state. Cleanup stops the recorder, removes only objects created by that run, and restores the original SetupConfig when safe.
+
+The v2.2 GUI is a self-contained native Windows host with the diagnostic payload embedded as resources. It extracts into `%ProgramData%\WindowsUpdateAnalytics\Runtime\<version>`, validates every file against the embedded SHA-256 manifest, and then starts the PowerShell engine. Embedded extraction avoids inherited ZIP download markers on individual modules, but it does not override `AllSigned`, AppLocker, WDAC, Smart App Control, or product-specific application control. A signed EXE does not automatically sign its extracted scripts; restricted environments need an organization-trusted signing and allowlisting process for every artifact their policy evaluates.
 
 Hook scripts are intentionally minimal: write an outcome marker, request the scheduled task, and return. They do not perform collection in the Windows Setup/OOBE critical path.
 

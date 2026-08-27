@@ -32,7 +32,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$toolVersion = '2.1.1'
+$toolVersion = '2.2.0'
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $context = $null
 $armedState = $null
@@ -347,6 +347,58 @@ try {
             }
         }
         Write-WudLog -Context $context -Level INFO -Message "Automatic follow-up is armed until $($armedState.ExpiresUtc)."
+
+        # Preflight is the beginning of a persistent case, not a completed
+        # investigation. Start the recorder and commit a small status receipt,
+        # but deliberately do not create Report.html, ReviewBundle.zip,
+        # Evidence.zip, or any other finalized artifact. Resume, Finalize, and
+        # Forensic are the only modes allowed to publish a report package.
+        $recorderStart = Start-WudRecorderTask -State $armedState
+        $armedState | Add-Member -NotePropertyName RecorderStart -NotePropertyValue $recorderStart -Force
+        if ($recorderStart.Status -ne 'Started') {
+            $null = Add-WudCollectionGap -Context $context -Collector 'persistence' -Source $armedState.RecorderTask.FullName -Status 'RecorderStartFailed' -Detail ([string]$recorderStart.Error) -Impact 'Material'
+        }
+        $context.Outcome = 'Monitoring Armed'
+        $context.CompletedUtc = [DateTime]::UtcNow.ToString('o')
+        $context.ExitCode = if ($context.CollectionComplete -and $recorderStart.Status -eq 'Started') { 0 } else { 30 }
+        $receiptPath = Join-Path $context.RunPath 'State\preflight-status.json'
+        $receipt = [pscustomobject][ordered]@{
+            SchemaVersion      = 1
+            ToolVersion        = $toolVersion
+            RunId              = $context.RunId
+            Status             = 'MonitoringArmed'
+            TargetVersion      = $context.TargetVersion
+            TargetBuild        = $context.Target.buildFamily
+            BaselineCompletedUtc = $context.CompletedUtc
+            ExpiresUtc         = $armedState.ExpiresUtc
+            RunPath            = $context.RunPath
+            OutputPath         = $context.OutputPath
+            RecorderStart      = $recorderStart
+            CollectionComplete = $context.CollectionComplete
+            ExitCode           = $context.ExitCode
+            FinalReportCreated = $false
+            FinalReportReason  = 'The final report is created only after automatic Resume, explicit Finalize, or Forensic collection.'
+            CollectorRecords   = @($context.CollectorRecords)
+            CollectionGaps     = @($context.CollectionGaps)
+        }
+        Write-WudJsonAtomic -Path $receiptPath -InputObject $receipt -Depth 30
+        $armedState | Add-Member -NotePropertyName PreflightStatusPath -NotePropertyValue $receiptPath -Force
+        $armedState | Add-Member -NotePropertyName PreflightCompletedUtc -NotePropertyValue $context.CompletedUtc -Force
+        $armedState | Add-Member -NotePropertyName PreflightExitCode -NotePropertyValue ([int]$context.ExitCode) -Force
+        Save-WudRunState -Context $context -State $armedState -SetActive $true
+        if ($recorderStart.Status -eq 'Started') {
+            Write-WudLog -Context $context -Level INFO -Message 'Persistent 60-second progress recorder started. No final report was created because the monitored upgrade has not finished.'
+        }
+        else {
+            Write-WudLog -Context $context -Level WARN -Message ("Persistent recorder did not start immediately: {0}" -f $recorderStart.Error)
+        }
+        Write-WudBootstrapLog -Level INFO -Message ("Preflight committed. RunId={0}; ExitCode={1}; RunPath={2}; FinalReportCreated=False" -f $context.RunId, $context.ExitCode, $context.RunPath)
+        Write-Host ''
+        Write-Host 'Monitoring armed. The final report will be created after the upgrade reaches a terminal state or an operator selects Finalize.' -ForegroundColor Cyan
+        Write-Host ("Run ID: {0}" -f $context.RunId)
+        Write-Host ("Durable evidence: {0}" -f $context.RunPath)
+        Write-Host ("Armed until: {0}" -f $armedState.ExpiresUtc)
+        exit ([int]$context.ExitCode)
     }
     elseif ($Mode -in @('Resume', 'Finalize')) {
         $finalizationState = Get-WudRunState -RunPath $context.RunPath
@@ -356,13 +408,6 @@ try {
 
     $null = Export-WudReviewBundle -Context $context
     $reportPath = Export-WudReportArtifacts -Context $context
-    if ($Mode -eq 'Preflight' -and $armedState) {
-        $recorderStart = Start-WudRecorderTask -State $armedState
-        $armedState | Add-Member -NotePropertyName RecorderStart -NotePropertyValue $recorderStart -Force
-        Save-WudRunState -Context $context -State $armedState -SetActive $true
-        if ($recorderStart.Status -eq 'Started') { Write-WudLog -Context $context -Level INFO -Message 'Persistent 60-second progress recorder started.' }
-        else { Write-WudLog -Context $context -Level WARN -Message ("Persistent recorder did not start immediately: {0}" -f $recorderStart.Error) }
-    }
     if ($Mode -in @('Resume', 'Finalize')) {
         $deferCopy = -not [string]::IsNullOrWhiteSpace($context.CopyTo) -and (-not $context.LastCopyResult -or -not $context.LastCopyResult.Succeeded)
         if ($deferCopy) {

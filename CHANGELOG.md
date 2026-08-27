@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.2.0 — 2026-08-27
+
+- Added a playful magnifying-glass update mascot icon to the GUI executable and taskbar window.
+- Added a self-contained Windows Forms operator application for x64 and ARM64. The GUI embeds and verifies the full diagnostic payload, requests elevation, streams collection progress, and exposes Start monitoring, Finalize, Forensic, Disarm, and result-opening actions without command-line parameters.
+- Changed Preflight into a strict non-final operation. It now commits the baseline to ProgramData, verifies persistent recorder startup, writes `State\preflight-status.json`, and exits before all report/archive exporters.
+- Stopped run-context creation from pre-creating the final Public Documents output directory. `Report.html`, `Evidence.zip`, `ReviewBundle.zip`, manifests, and CSV/JSON result contracts are now published only by automatic Resume, explicit Finalize, or Forensic collection.
+- Added a material `RecorderStartFailed` coverage state so the GUI cannot report a healthy armed case when immediate recorder startup was not verified.
+- Added deterministic x64/ARM64 build scripts, embedded-payload manifest validation, GitHub Actions artifacts, and v2.2 regression coverage.
+- Documented that embedding avoids per-module ZIP download markers but does not bypass AllSigned, AppLocker, WDAC, or the need for organization-trusted signing where those controls apply.
+
+## 2.1.2 — 2026-08-27
+
+- Added a manifest-first extracted-bundle preparation gate for systems where ZIP extraction propagates Internet-zone markers to every PowerShell entry point and module.
+- The main CMD launcher now detects marked files before loading PowerShell code, requests one explicit `UNBLOCK` confirmation, recursively removes only `Zone.Identifier` streams inside the verified bundle, confirms removal, and then continues normally.
+- Added standalone `Prepare-Win11UpgradeDiag.cmd` with noninteractive `-Check` and `-Apply` modes for approved software-distribution workflows.
+- Preparation never calls `Set-ExecutionPolicy` and explicitly stops when Group Policy requires `AllSigned` or `Restricted`; AppLocker, WDAC, Defender, and other application-control enforcement are not bypassed.
+- Added Windows-native download-marker, manifest-tamper, policy-boundary, launcher-wiring, and staged-runtime regression coverage.
+
 ## 2.1.1 — 2026-08-27
 
 - Fixed Windows PowerShell 5.1 process accounting by retaining the native process handle before timeout polling, preserving explicit exit codes even for commands that terminate immediately.
