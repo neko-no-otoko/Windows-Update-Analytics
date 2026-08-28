@@ -4,7 +4,7 @@
 
 ### Before the managed upgrade
 
-1. Copy the architecture-appropriate `WindowsUpdateAnalytics-2.2.0-win-*.exe` to a local folder.
+1. Copy the architecture-appropriate `WindowsUpdateAnalytics-2.2.1-win-*.exe` to a local folder.
 2. Launch it as the intended technician and accept UAC.
 3. Review the settings and select **Start monitoring**.
 4. Wait for the GUI to verify **Monitoring is armed**. The baseline remains in ProgramData and no final report is published. Exit `0` is not a prediction that the upgrade will succeed.
@@ -31,6 +31,10 @@ Open the GUI and select **Finalize and build report**. This is an explicit opera
 `Finalize` records the requesting Windows identity, whether the arm period had expired, whether Setup was active, and the complete automatic-terminal-signal evaluation in `State\operator-finalize.json`. Those observations are included in the final evidence. They do not alter the outcome model. If no success, rollback, or failure is directly observed, the report says so; it does not turn the operator action into a successful-upgrade claim.
 
 If Setup is still active, `Finalize` continues because the selected mode is explicit. The report is labeled from the facts available at that moment (normally `Upgrade In Progress`), locked sources may appear as collection gaps, and no later progress will be recorded after successful cleanup. Use `Resume`/`Auto` when continued monitoring is preferable. Use `Disarm` only when no final collection is wanted.
+
+If the SYSTEM startup task already owns the case after reboot, the GUI reports **Automatic post-reboot finalization is already running** and disables Finalize and Stop monitoring. It opens `State\run.lock` exclusively to distinguish an active owner from the durable lock file left on disk. The status panel and progress console refresh the newest readable line from the run's `Collector.log` every five seconds. Wait for that pass to finish; do not delete the lock file or launch another backend process.
+
+Version 2.2.1 does not run the former broad Software collector. Installed applications, AppX/provisioned packages, optional features, capabilities, language/profile inventories, services, security products, process lists, and filesystem-filter enumeration are omitted. Windows Setup and Compatibility Appraiser artifacts remain in scope, so a source-reported application compatibility block is still preserved without a general software inventory.
 
 ## Automatic selection
 

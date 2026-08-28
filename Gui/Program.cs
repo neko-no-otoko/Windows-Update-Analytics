@@ -32,7 +32,7 @@ internal static class Program
 
 internal sealed class MainForm : Form
 {
-    private const string AppVersion = "2.2.0";
+    private const string AppVersion = "2.2.1";
     private readonly Label _status = new();
     private readonly Label _statusDetail = new();
     private readonly TextBox _outputPath = new();
@@ -45,6 +45,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _noInternet = new();
     private readonly CheckBox _noHooks = new();
     private readonly TextBox _log = new();
+    private readonly ToolTip _statusToolTip = new();
     private readonly Button _start = new();
     private readonly Button _finalize = new();
     private readonly Button _forensic = new();
@@ -55,6 +56,7 @@ internal sealed class MainForm : Form
     private bool _busy;
     private string? _runtimePath;
     private string? _lastOutputPath;
+    private string? _lastCollectorStatusLine;
     private DateTime _actionStartedUtc;
 
     public MainForm()
@@ -105,7 +107,7 @@ internal sealed class MainForm : Form
         });
         root.Controls.Add(heading);
 
-        var statusPanel = new Panel { Dock = DockStyle.Top, Height = 78, BackColor = Color.White, Padding = new Padding(16), Margin = new Padding(0, 12, 0, 12) };
+        var statusPanel = new Panel { Dock = DockStyle.Top, Height = 96, BackColor = Color.White, Padding = new Padding(16), Margin = new Padding(0, 12, 0, 12) };
         _status.Text = "Loading status…";
         _status.Font = new Font("Segoe UI Semibold", 13F);
         _status.ForeColor = Color.FromArgb(18, 43, 70);
@@ -114,6 +116,8 @@ internal sealed class MainForm : Form
         _statusDetail.Text = "Inspecting the durable case state.";
         _statusDetail.ForeColor = Color.FromArgb(75, 85, 99);
         _statusDetail.Dock = DockStyle.Bottom;
+        _statusDetail.Height = 40;
+        _statusDetail.AutoSize = false;
         _statusDetail.AutoEllipsis = true;
         statusPanel.Controls.Add(_statusDetail);
         statusPanel.Controls.Add(_status);
@@ -282,6 +286,11 @@ internal sealed class MainForm : Form
     private async void FinalizeOrCopyAsync()
     {
         var active = ActiveRunInfo.TryRead();
+        if (active?.ProbeRunLock() == RunLockStatus.Held)
+        {
+            ShowAutomaticFinalizationStatus(active, true);
+            return;
+        }
         if (active?.Status.Equals("AwaitingInteractiveCopy", StringComparison.OrdinalIgnoreCase) == true)
         {
             await RunModeAsync("Resume");
@@ -314,7 +323,8 @@ internal sealed class MainForm : Form
         if (activeBefore?.OutputPath is { Length: > 0 }) _lastOutputPath = activeBefore.OutputPath;
         try
         {
-            var exitCode = await RunBackendAsync(mode);
+            var backend = await RunBackendAsync(mode);
+            var exitCode = backend.ExitCode;
             RefreshState();
             var activeAfter = ActiveRunInfo.TryRead();
             if (activeAfter?.OutputPath is { Length: > 0 }) _lastOutputPath = activeAfter.OutputPath;
@@ -342,14 +352,33 @@ internal sealed class MainForm : Form
             }
             else if (mode is "Finalize" or "Forensic" or "Resume")
             {
-                var report = FindLatestReport();
-                SetStatus(exitCode is 0 or 10 or 20 ? "Report created" : "Collection finished with limitations",
-                    report ?? $"Backend exit code: {exitCode}", exitCode >= 30);
+                if (backend.RunLockCollision)
+                {
+                    ShowAutomaticFinalizationStatus(activeAfter ?? activeBefore, true);
+                    return;
+                }
+                var expectedReport = string.IsNullOrWhiteSpace(activeBefore?.OutputPath) ? null : Path.Combine(activeBefore.OutputPath, "Report.html");
+                var report = expectedReport is not null && File.Exists(expectedReport)
+                    ? expectedReport
+                    : activeBefore is null
+                        ? FindLatestReport(_actionStartedUtc.AddSeconds(-5))
+                        : null;
                 if (report is not null)
                 {
+                    SetStatus(exitCode >= 30 ? "Report created with collection limitations" : "Report created",
+                        report, exitCode >= 30);
                     _lastOutputPath = Path.GetDirectoryName(report);
                     var answer = MessageBox.Show(this, $"Report collection finished with exit code {exitCode}.\n\nOpen the report now?", "Report ready", MessageBoxButtons.YesNo, exitCode >= 30 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
                     if (answer == DialogResult.Yes) OpenPath(report);
+                }
+                else
+                {
+                    var detail = backend.LastMessage ?? $"Backend exit code: {exitCode}";
+                    SetStatus(exitCode >= 30 ? "Collection failed before a report was created" : "Collection finished without a report",
+                        detail, true);
+                    MessageBox.Show(this,
+                        $"No new report was created.\n\n{detail}\n\nBackend exit code: {exitCode}",
+                        "No report created", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
             else if (mode == "Disarm")
@@ -392,7 +421,7 @@ internal sealed class MainForm : Form
         return true;
     }
 
-    private async Task<int> RunBackendAsync(string mode)
+    private async Task<BackendExecutionResult> RunBackendAsync(string mode)
     {
         var systemRoot = Environment.GetEnvironmentVariable("SystemRoot") ?? @"C:\Windows";
         var powerShell = Path.Combine(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -414,15 +443,24 @@ internal sealed class MainForm : Form
         };
         foreach (var argument in BuildArguments(mode, script, bootstrapLog)) startInfo.ArgumentList.Add(argument);
 
+        var outputLines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void RecordOutput(string line)
+        {
+            outputLines.Enqueue(line);
+            while (outputLines.Count > 200) outputLines.TryDequeue(out _);
+            AppendLog(line);
+        }
+
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, args) => { if (args.Data is not null) AppendLog(args.Data); };
-        process.ErrorDataReceived += (_, args) => { if (args.Data is not null) AppendLog("ERROR: " + args.Data); };
+        process.OutputDataReceived += (_, args) => { if (args.Data is not null) RecordOutput(args.Data); };
+        process.ErrorDataReceived += (_, args) => { if (args.Data is not null) RecordOutput("ERROR: " + args.Data); };
         if (!process.Start()) throw new InvalidOperationException("Windows PowerShell did not start.");
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         await process.WaitForExitAsync();
+        process.WaitForExit();
         AppendLog($"Backend exited with code {process.ExitCode}.");
-        return process.ExitCode;
+        return new BackendExecutionResult(process.ExitCode, outputLines.ToArray());
     }
 
     private IEnumerable<string> BuildArguments(string mode, string script, string bootstrapLog)
@@ -451,22 +489,36 @@ internal sealed class MainForm : Form
             _lastOutputPath = active.OutputPath;
             var copyPending = active.Status.Equals("AwaitingInteractiveCopy", StringComparison.OrdinalIgnoreCase);
             var recorderFailed = !string.IsNullOrWhiteSpace(active.RecorderStartStatus) && !active.RecorderStartStatus.Equals("Started", StringComparison.OrdinalIgnoreCase);
+            var runLockStatus = active.ProbeRunLock();
+            var collectorStatus = active.TryReadLatestCollectorStatus();
+            if (collectorStatus is not null && !string.Equals(_lastCollectorStatusLine, collectorStatus.RawLine, StringComparison.Ordinal))
+            {
+                _lastCollectorStatusLine = collectorStatus.RawLine;
+                AppendLog("[Collector.log] " + collectorStatus.RawLine);
+            }
             if (setStatus && !_busy)
             {
-                if (copyPending) SetStatus("Final report ready; network copy is pending", $"Run {active.RunId} retained its state so an interactive technician can complete the requested UNC copy.", true);
+                if (runLockStatus == RunLockStatus.Held) ShowAutomaticFinalizationStatus(active, false);
+                else if (copyPending) SetStatus("Final report ready; network copy is pending", $"Run {active.RunId} retained its state so an interactive technician can complete the requested UNC copy.", true);
+                else if (runLockStatus == RunLockStatus.Unknown) SetStatus("Run activity could not be verified", BuildCollectorDetail(collectorStatus, "Windows could not verify whether another diagnostic pass owns the run lock."), true);
                 else if (recorderFailed) SetStatus("Monitoring needs attention", $"Run {active.RunId} recorder startup status: {active.RecorderStartStatus}.", true);
-                else SetStatus("Monitoring is armed", $"Run {active.RunId} • target {active.TargetVersion} • expires {active.ExpiresUtcLocal}", false);
+                else SetStatus("Monitoring is armed", BuildCollectorDetail(collectorStatus, $"Run {active.RunId} • target {active.TargetVersion} • expires {active.ExpiresUtcLocal}"), false);
             }
             _start.Enabled = false;
             _forensic.Enabled = false;
-            _finalize.Enabled = !_busy;
-            _finalize.Text = copyPending ? "Complete pending network copy" : "Finalize and build report";
-            _disarm.Enabled = !_busy;
+            _finalize.Enabled = !_busy && runLockStatus == RunLockStatus.NotHeld;
+            _finalize.Text = runLockStatus == RunLockStatus.Held
+                ? "Automatic finalization running"
+                : copyPending
+                    ? "Complete pending network copy"
+                    : "Finalize and build report";
+            _disarm.Enabled = !_busy && runLockStatus == RunLockStatus.NotHeld;
             _openEvidence.Enabled = Directory.Exists(active.RunPath);
             _openReport.Enabled = File.Exists(Path.Combine(active.OutputPath ?? string.Empty, "Report.html")) || FindLatestReport() is not null;
         }
         else
         {
+            _lastCollectorStatusLine = null;
             _finalize.Text = "Finalize and build report";
             if (setStatus && !_busy) SetStatus("No monitored upgrade is active", "Choose Start monitoring before Windows Update offers or installs 25H2, or create a one-time forensic report.", false);
             _start.Enabled = !_busy;
@@ -496,7 +548,28 @@ internal sealed class MainForm : Form
         _status.Text = title;
         _status.ForeColor = warning ? Color.FromArgb(170, 65, 45) : Color.FromArgb(18, 43, 70);
         _statusDetail.Text = detail;
+        _statusToolTip.SetToolTip(_statusDetail, detail);
     }
+
+    private void ShowAutomaticFinalizationStatus(ActiveRunInfo? active, bool showDialog)
+    {
+        var collectorStatus = active?.TryReadLatestCollectorStatus();
+        var detail = active is null
+            ? "Another diagnostic pass owns the run. Wait for it to finish; this window refreshes every five seconds."
+            : BuildCollectorDetail(collectorStatus, $"Run {active.RunId} is being handled by the automatic SYSTEM task. This window refreshes every five seconds.");
+        SetStatus("Automatic post-reboot finalization is already running", detail, false);
+        _finalize.Enabled = false;
+        _finalize.Text = "Automatic finalization running";
+        _disarm.Enabled = false;
+        if (showDialog)
+        {
+            MessageBox.Show(this,
+                $"The automatic post-reboot diagnostic pass is already handling this run. Wait for it to finish; the GUI will refresh every five seconds.\n\n{detail}\n\nDo not delete State\\run.lock or start another Finalize pass.",
+                "Automatic finalization in progress", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    private static string BuildCollectorDetail(CollectorLogStatus? collectorStatus, string fallback) => collectorStatus?.DisplayText ?? fallback;
 
     private void AppendLog(string text)
     {
@@ -520,12 +593,12 @@ internal sealed class MainForm : Form
         if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path)) OpenPath(path);
     }
 
-    private string? FindLatestReport()
+    private string? FindLatestReport(DateTime? notBeforeUtc = null)
     {
         if (!string.IsNullOrWhiteSpace(_lastOutputPath))
         {
             var known = Path.Combine(_lastOutputPath, "Report.html");
-            if (File.Exists(known)) return known;
+            if (File.Exists(known) && (!notBeforeUtc.HasValue || File.GetLastWriteTimeUtc(known) >= notBeforeUtc.Value)) return known;
         }
         var parent = _outputPath.Text;
         if (!Directory.Exists(parent)) return null;
@@ -534,6 +607,7 @@ internal sealed class MainForm : Form
             return Directory.EnumerateFiles(parent, "Report.html", SearchOption.AllDirectories)
                 .Select(path => new FileInfo(path))
                 .Where(file => file.Directory?.Name.StartsWith("Win11UpgradeDiag-", StringComparison.OrdinalIgnoreCase) == true)
+                .Where(file => !notBeforeUtc.HasValue || file.LastWriteTimeUtc >= notBeforeUtc.Value)
                 .OrderByDescending(file => file.LastWriteTimeUtc)
                 .FirstOrDefault()?.FullName;
         }
@@ -598,6 +672,45 @@ internal sealed class ActiveRunInfo
     public DateTime? ExpiresUtc { get; private init; }
     public string ExpiresUtcLocal => ExpiresUtc?.ToLocalTime().ToString("g") ?? "unknown";
 
+    public RunLockStatus ProbeRunLock()
+    {
+        if (string.IsNullOrWhiteSpace(RunPath)) return RunLockStatus.Unknown;
+        var lockPath = Path.Combine(RunPath, "State", "run.lock");
+        if (!File.Exists(lockPath)) return RunLockStatus.NotHeld;
+        try
+        {
+            using var stream = new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            return RunLockStatus.NotHeld;
+        }
+        catch (FileNotFoundException) { return RunLockStatus.NotHeld; }
+        catch (DirectoryNotFoundException) { return RunLockStatus.NotHeld; }
+        catch (IOException) { return RunLockStatus.Held; }
+        catch (UnauthorizedAccessException) { return RunLockStatus.Unknown; }
+        catch { return RunLockStatus.Unknown; }
+    }
+
+    public CollectorLogStatus? TryReadLatestCollectorStatus()
+    {
+        if (string.IsNullOrWhiteSpace(RunPath)) return null;
+        var logPath = Path.Combine(RunPath, "Collector.log");
+        if (!File.Exists(logPath)) return null;
+        try
+        {
+            const int maximumTailBytes = 128 * 1024;
+            using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var offset = Math.Max(0, stream.Length - maximumTailBytes);
+            stream.Seek(offset, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream, Encoding.UTF8, true);
+            var tail = reader.ReadToEnd();
+            var lines = tail.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries);
+            var lastLine = lines.LastOrDefault(CollectorLogStatus.IsStructured)
+                ?? lines.LastOrDefault(line => !string.IsNullOrWhiteSpace(line));
+            lastLine = lastLine?.Trim();
+            return string.IsNullOrWhiteSpace(lastLine) ? null : CollectorLogStatus.Parse(lastLine);
+        }
+        catch { return null; }
+    }
+
     public static ActiveRunInfo? TryRead()
     {
         var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
@@ -625,6 +738,59 @@ internal sealed class ActiveRunInfo
     }
 
     private static string ReadString(JsonElement root, string name) => root.TryGetProperty(name, out var value) ? value.ToString() : string.Empty;
+}
+
+internal enum RunLockStatus
+{
+    NotHeld,
+    Held,
+    Unknown
+}
+
+internal sealed class CollectorLogStatus
+{
+    private static readonly Regex LogPattern = new(
+        @"^(?<timestamp>\S+)\s+\[(?<level>DEBUG|INFO|WARN|ERROR)\]\s+(?<message>.*)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    public string RawLine { get; }
+    public string DisplayText { get; }
+
+    private CollectorLogStatus(string rawLine, string displayText)
+    {
+        RawLine = rawLine;
+        DisplayText = displayText;
+    }
+
+    public static bool IsStructured(string line) => LogPattern.IsMatch(line.Trim());
+
+    public static CollectorLogStatus Parse(string rawLine)
+    {
+        var match = LogPattern.Match(rawLine);
+        if (!match.Success) return new CollectorLogStatus(rawLine, "Last Collector.log status: " + rawLine);
+
+        var level = match.Groups["level"].Value.ToUpperInvariant();
+        var message = match.Groups["message"].Value;
+        var timestampText = match.Groups["timestamp"].Value;
+        var timestamp = DateTimeOffset.TryParse(timestampText, out var parsed)
+            ? parsed.ToLocalTime().ToString("g")
+            : timestampText;
+        return new CollectorLogStatus(rawLine, $"Last Collector.log status ({timestamp}, {level}): {message}");
+    }
+}
+
+internal sealed class BackendExecutionResult
+{
+    public int ExitCode { get; }
+    public IReadOnlyList<string> OutputLines { get; }
+    public bool RunLockCollision => OutputLines.Any(line => line.Contains("already handling this run", StringComparison.OrdinalIgnoreCase));
+    public string? LastMessage => OutputLines.LastOrDefault(line => !string.IsNullOrWhiteSpace(line));
+
+    public BackendExecutionResult(int exitCode, IReadOnlyList<string> outputLines)
+    {
+        ExitCode = exitCode;
+        OutputLines = outputLines;
+    }
 }
 
 internal static class PayloadManager

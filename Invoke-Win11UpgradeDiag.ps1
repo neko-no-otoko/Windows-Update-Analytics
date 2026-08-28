@@ -32,7 +32,7 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$toolVersion = '2.2.0'
+$toolVersion = '2.2.1'
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $context = $null
 $armedState = $null
@@ -188,7 +188,7 @@ try {
         $TargetVersion = [string]$state.TargetVersion
         $context = New-WudRunContext -ToolRoot $toolRoot -ToolVersion $toolVersion -RunId $state.RunId -RunPath $state.RunPath -OutputPath $state.OutputPath -Mode $Mode -PhaseLabel $Mode -TargetVersion $TargetVersion -CopyTo $state.CopyTo -MediaPath $null -AcceptWindowsEula $false -IncludeLargeDumps ([bool]$state.IncludeLargeDumps) -NoInternet ([bool]$state.NoInternet) -NoSetupHooks ([bool]$state.NoSetupHooks) -ArmDays $ArmDays
         try { $runLock = Enter-WudRunLock -RunPath $context.RunPath }
-        catch { Write-Host 'Another Win11UpgradeDiag process is already handling this run.'; exit 10 }
+        catch { Write-Host 'Automatic post-reboot finalization or another Win11UpgradeDiag process is already handling this run. Wait for the active pass to finish; do not delete State\run.lock.'; exit 10 }
         if ([string]$state.Status -eq 'AwaitingInteractiveCopy') {
             if (-not (Test-WudInteractiveUser)) {
                 Write-WudLog -Context $context -Level INFO -Message 'The diagnostic report is complete and is waiting for an interactive technician token to perform the requested UNC copy.'

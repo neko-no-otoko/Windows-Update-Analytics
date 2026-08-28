@@ -766,6 +766,15 @@ function Get-WudInventoryCollection {
     return @($propertyMember.Value)
 }
 
+function Test-WudSoftwareInventoryCollected {
+    param($Inventory)
+    if (-not $Inventory) { return $false }
+    $softwareMember = $Inventory.PSObject.Properties['Software']
+    if (-not $softwareMember -or -not $softwareMember.Value) { return $false }
+    $statusMember = $softwareMember.Value.PSObject.Properties['CollectionStatus']
+    return (-not $statusMember -or [string]$statusMember.Value -ne 'DisabledByDesign')
+}
+
 function ConvertTo-WudPolicyMap {
     param($Inventory)
     $map = @{}
@@ -820,13 +829,20 @@ function Get-WudSnapshotComparison {
     if (@($currentDir).Count -eq 0) { $currentDir = @($snapshotDirs | Sort-Object LastWriteTimeUtc | Select-Object -Last 1) }
     $baseline = if (@($baselineDir).Count -gt 0) { Read-WudJson -Path (Join-Path $baselineDir[0].FullName 'inventory.json') } else { $null }
     $current = if (@($currentDir).Count -gt 0) { Read-WudJson -Path (Join-Path $currentDir[0].FullName 'inventory.json') } else { $Context.Inventory }
+    $softwareUnavailable = [pscustomobject][ordered]@{
+        Available = $false
+        Reason    = 'Broad installed-software inventory is disabled by design.'
+        Added     = @()
+        Removed   = @()
+        Changed   = @()
+    }
     $diff = [pscustomobject][ordered]@{
         Available    = ($null -ne $baseline -and $null -ne $current -and @($baselineDir).Count -gt 0 -and $baselineDir[0].FullName -ne $currentDir[0].FullName)
-        Applications = $null
+        Applications = $softwareUnavailable
         Drivers      = $null
         Packages     = $null
         Devices      = $null
-        Services     = $null
+        Services     = $softwareUnavailable
         Policies     = $null
         Security     = $null
         Disks        = $null
@@ -835,11 +851,13 @@ function Get-WudSnapshotComparison {
         CurrentBuild = if ($current -and $current.Identity) { $current.Identity.CurrentBuild } else { $null }
     }
     if ($diff.Available) {
-        $diff.Applications = Compare-WudMap -Before (ConvertTo-WudApplicationMap $baseline) -After (ConvertTo-WudApplicationMap $current)
+        if ((Test-WudSoftwareInventoryCollected $baseline) -and (Test-WudSoftwareInventoryCollected $current)) {
+            $diff.Applications = Compare-WudMap -Before (ConvertTo-WudApplicationMap $baseline) -After (ConvertTo-WudApplicationMap $current)
+            $diff.Services = Compare-WudMap -Before (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $baseline 'Software' 'Services') 'Name' @('State', 'StartMode', 'PathName', 'StartName')) -After (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $current 'Software' 'Services') 'Name' @('State', 'StartMode', 'PathName', 'StartName'))
+        }
         $diff.Drivers = Compare-WudMap -Before (ConvertTo-WudDriverMap $baseline) -After (ConvertTo-WudDriverMap $current)
         $diff.Packages = Compare-WudMap -Before (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $baseline 'Servicing' 'Packages') 'PackageName' @('PackageState', 'ReleaseType', 'InstallTime')) -After (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $current 'Servicing' 'Packages') 'PackageName' @('PackageState', 'ReleaseType', 'InstallTime'))
         $diff.Devices = Compare-WudMap -Before (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $baseline 'Drivers' 'Devices') 'DeviceID' @('Name', 'Status', 'ConfigManagerErrorCode', 'Service')) -After (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $current 'Drivers' 'Devices') 'DeviceID' @('Name', 'Status', 'ConfigManagerErrorCode', 'Service'))
-        $diff.Services = Compare-WudMap -Before (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $baseline 'Software' 'Services') 'Name' @('State', 'StartMode', 'PathName', 'StartName')) -After (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $current 'Software' 'Services') 'Name' @('State', 'StartMode', 'PathName', 'StartName'))
         $diff.Policies = Compare-WudMap -Before (ConvertTo-WudPolicyMap $baseline) -After (ConvertTo-WudPolicyMap $current)
         $diff.Security = Compare-WudMap -Before (ConvertTo-WudSecurityMap $baseline) -After (ConvertTo-WudSecurityMap $current)
         $diff.Disks = Compare-WudMap -Before (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $baseline 'Hardware' 'LogicalDisks') 'DeviceID' @('FileSystem', 'Size', 'FreeSpace', 'Status')) -After (ConvertTo-WudInventoryItemMap (Get-WudInventoryCollection $current 'Hardware' 'LogicalDisks') 'DeviceID' @('FileSystem', 'Size', 'FreeSpace', 'Status'))

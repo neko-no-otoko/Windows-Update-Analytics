@@ -330,7 +330,7 @@ function Get-WudReviewInventoryDiff {
     $baselineFile = @($snapshots | Where-Object { $_.Name -eq 'Preflight' } | ForEach-Object { Join-Path $_.FullName 'inventory.json' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
     $baseline = if (@($baselineFile).Count -gt 0) { Read-WudJson -Path $baselineFile[0] } else { $null }
     $changed = New-Object Collections.ArrayList
-    foreach ($section in @('Identity', 'Hardware', 'Software', 'Drivers', 'Management', 'Servicing')) {
+    foreach ($section in @('Identity', 'Hardware', 'Drivers', 'Management', 'Servicing')) {
         $beforeValue = Get-WudReviewProperty $baseline $section
         $afterValue = Get-WudReviewProperty $CurrentInventory $section
         if ($null -eq $beforeValue -and $null -eq $afterValue) { continue }
@@ -461,14 +461,16 @@ function Add-WudInventoryFacts {
     }
 
     $software = Get-WudReviewProperty $CurrentInventory 'Software'
+    $softwareCollection = [string](Get-WudReviewProperty $software 'CollectionStatus' 'Collected')
     $inventoryCounts = [pscustomobject][ordered]@{
-        Applications = @(Get-WudReviewProperty $software 'Applications' @()).Count
-        Services = @(Get-WudReviewProperty $software 'Services' @()).Count
+        SoftwareCollection = $softwareCollection
+        Applications = if ($softwareCollection -eq 'DisabledByDesign') { $null } else { @(Get-WudReviewProperty $software 'Applications' @()).Count }
+        Services = if ($softwareCollection -eq 'DisabledByDesign') { $null } else { @(Get-WudReviewProperty $software 'Services' @()).Count }
         SignedDrivers = @(Get-WudReviewProperty $drivers 'SignedDrivers' @()).Count
         Devices = @(Get-WudReviewProperty $drivers 'Devices' @()).Count
         Packages = @(Get-WudReviewProperty $servicing 'Packages' @()).Count
     }
-    $null = Add-WudReviewFact -Context $Context -FactType Computed -Category 'InventoryCoverage' -Statement 'The collector counted normalized inventory records.' -Value $inventoryCounts -SourceRef ("{0}/inventory.json" -f $Context.PhaseLabel) -ScopeStatus ContextOnly
+    $null = Add-WudReviewFact -Context $Context -FactType Computed -Category 'InventoryCoverage' -Statement 'The collector recorded normalized inventory coverage and counts; broad installed-software inventory is disabled by design.' -Value $inventoryCounts -SourceRef ("{0}/inventory.json" -f $Context.PhaseLabel) -ScopeStatus ContextOnly
 }
 
 function Add-WudActiveDiagnosticFacts {

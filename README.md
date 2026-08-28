@@ -1,12 +1,12 @@
 # Windows Update Analytics
 
-Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.2.0 adds the self-contained `WindowsUpdateAnalytics-2.2.0-win-x64.exe` and `WindowsUpdateAnalytics-2.2.0-win-arm64.exe` operator applications. The GUI starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture automatically or on an explicit operator request.
+Windows Update Analytics ships `Win11UpgradeDiag`, a read-only Windows 11 feature-upgrade evidence recorder and collector. Version 2.2.1 ships the self-contained `WindowsUpdateAnalytics-2.2.1-win-x64.exe` and `WindowsUpdateAnalytics-2.2.1-win-arm64.exe` operator applications. The GUI starts before the upgrade, samples native progress and Delivery Optimization every 60 seconds, checkpoints evidence at observed state boundaries, survives reboot, and finishes with a full forensic capture automatically or on an explicit operator request.
 
 The target map is optimized for Windows 11 23H2 to 25H2. The tool treats that path as a full feature upgrade; it never starts Windows Setup, installs updates, bypasses safeguards, applies repairs, uploads evidence, or asserts a root cause.
 
 ## Quick start
 
-1. Copy the executable matching the device architecture to a local folder. Most devices use `WindowsUpdateAnalytics-2.2.0-win-x64.exe`; native Windows on ARM devices can use the ARM64 build.
+1. Copy the executable matching the device architecture to a local folder. Most devices use `WindowsUpdateAnalytics-2.2.1-win-x64.exe`; native Windows on ARM devices can use the ARM64 build.
 2. Double-click the executable and approve the UAC prompt.
 3. Review the visible settings, then select **Start monitoring**.
 4. Allow the baseline collection to finish. Active health checks can take from several minutes to more than an hour on a slow or unhealthy machine.
@@ -40,6 +40,10 @@ The executable is not a bypass for Group Policy `AllSigned` or `Restricted`, App
 | **Stop monitoring** | Removes owned tasks and hooks while retaining evidence. It does not create a report. |
 | **Open latest report** | Opens the newest completed `Report.html`; it never treats a Preflight receipt as a report. |
 | **Open case folder** | Opens the protected ProgramData case for the currently armed run. |
+
+While an automatic post-reboot pass owns the active run, the GUI says **Automatic post-reboot finalization is already running**, disables duplicate Finalize/Stop actions, and refreshes the newest `Collector.log` status every five seconds. The full current line is also copied into the on-screen progress console and is available as a tooltip when the status panel truncates it.
+
+Broad installed-software inventory is disabled by design in v2.2.1 to keep collection focused and reduce duration. The tool does not enumerate uninstall registry entries, AppX packages, optional features, user profiles, services, security products, processes, or filesystem filters. It still retains Windows Setup, CompatData, and Compatibility Appraiser evidence when Windows itself names an application or component as an upgrade block.
 
 ## Advanced command interface
 
@@ -177,7 +181,7 @@ Outcome is no longer a single ambiguous inference. `Summary.json` separately rep
 ## Files and state
 
 - Persistent runtime and runs: `%ProgramData%\Win11UpgradeDiag`
-- Embedded GUI payload runtime: `%ProgramData%\WindowsUpdateAnalytics\Runtime\2.2.0`
+- Embedded GUI payload runtime: `%ProgramData%\WindowsUpdateAnalytics\Runtime\2.2.1`
 - Per-run evidence: `%ProgramData%\Win11UpgradeDiag\Runs\<RunId>`
 - Default finalized result: `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`
 - Early launcher/UAC diagnostic: `%PUBLIC%\Documents\Win11UpgradeDiag-Launcher.log`
@@ -198,6 +202,7 @@ pwsh -NoProfile -File .\Tests\Invoke-V200Tests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V210Tests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V212Tests.ps1
 pwsh -NoProfile -File .\Tests\Invoke-V220Tests.ps1
+pwsh -NoProfile -File .\Tests\Invoke-V221Tests.ps1
 ```
 
 If Pester 5 is installed, run:

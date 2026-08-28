@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.1 — 2026-08-28
+
+- Changed the GUI's held-run message to **Automatic post-reboot finalization is already running** and disabled duplicate Finalize/Stop actions while another process actually owns the exclusive run lock.
+- Added a five-second live tail of the active run's `Collector.log`; the newest status appears in the status panel, its tooltip, and the GUI progress console even while SYSTEM is writing the file.
+- Fixed exit-code `10` handling so a run-lock collision or another no-report result can no longer be labeled **Report created**.
+- Removed the broad Software collector and its uninstall, AppX, features/capabilities, language/profile, service, security-product, process, and filesystem-filter enumeration to reduce collection time.
+- Kept Windows Setup, CompatData, and Compatibility Appraiser artifacts in scope so source-reported application blocks remain available without general software inventory.
+- Marked software collection as `DisabledByDesign` in normalized inventory/review output and suppressed misleading application/service pre/post removals when finalizing an older armed run.
+
 ## 2.2.0 — 2026-08-27
 
 - Added a playful magnifying-glass update mascot icon to the GUI executable and taskbar window.

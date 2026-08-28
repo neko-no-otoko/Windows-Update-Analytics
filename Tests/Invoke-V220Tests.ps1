@@ -22,7 +22,7 @@ $manifestSource = Get-Content -LiteralPath (Join-Path $toolRoot 'Gui/app.manifes
 $workflowSource = Get-Content -LiteralPath (Join-Path $toolRoot '.github/workflows/build-windows-exe.yml') -Raw
 $readmeSource = Get-Content -LiteralPath (Join-Path $toolRoot 'README.md') -Raw
 
-Assert-WudV220 ($version -eq '2.2.0' -and $entrySource -match '\$toolVersion\s*=\s*''2\.2\.0''') 'Tool and package versions identify v2.2.0'
+Assert-WudV220 ([version]$version -ge [version]'2.2.0' -and $entrySource -match ('\$toolVersion\s*=\s*''' + [regex]::Escape($version) + '''')) 'Current tool and package versions retain the v2.2.0 GUI contracts'
 $receiptIndex = $entrySource.IndexOf("FinalReportCreated = `$false")
 $preflightExitIndex = $entrySource.IndexOf("exit ([int]`$context.ExitCode)", $receiptIndex)
 $reviewExportIndex = $entrySource.IndexOf('Export-WudReviewBundle', $receiptIndex)

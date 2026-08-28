@@ -45,7 +45,8 @@ jobs:
             './Tests/Invoke-V200Tests.ps1',
             './Tests/Invoke-V210Tests.ps1',
             './Tests/Invoke-V212Tests.ps1',
-            './Tests/Invoke-V220Tests.ps1'
+            './Tests/Invoke-V220Tests.ps1',
+            './Tests/Invoke-V221Tests.ps1'
           )
           foreach ($test in $tests) {
             & pwsh -NoProfile -File $test
@@ -58,7 +59,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: WindowsUpdateAnalytics-2.2.0
+          name: WindowsUpdateAnalytics-2.2.1
           path: |
             dist/*.exe
             dist/*.json

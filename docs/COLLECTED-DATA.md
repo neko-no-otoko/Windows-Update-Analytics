@@ -9,7 +9,7 @@ Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes 
 | Identity | Device/model/serial, edition/version/build/UBR, architecture, boot/install times, source OS history, Windows image/setup state | Current source/target state, completed image state, and whether a build transition is directly visible |
 | Hardware | CPU, memory, firmware, TPM, Secure Boot, graphics, battery, disks, reliability, partitions, volumes, WinRE, BCD, BitLocker status | Exact readiness-related values and storage/boot/security state; no claim that a value caused setup to fail |
 | Compatibility | AppCompat/safeguard registry, CompatData/Appraiser XML, task result, optional media scan | Source-reported blocks/warnings and scan-only result, kept separate from a real upgrade attempt |
-| Software | Uninstall registry, AppX/provisioned apps, capabilities, features, languages, profiles, services, security products, filters | Installed component inventory and pre/post differences |
+| Software inventory | Disabled by design in v2.2.1. No uninstall registry, AppX/provisioned package, feature, capability, language/profile, service, security-product, process, or filesystem-filter enumeration | The normalized inventory explicitly reports `DisabledByDesign`; Windows Setup/CompatData/Appraiser can still provide source-reported application blocks |
 | Drivers/devices | PnP state/problem codes, signed drivers, driver store, `pnputil`, SetupAPI | Driver/device state and exact source-reported setup/device records |
 | Update ownership/policy | WUA history, Update ID/revision, client application, service/server selection, WUfB/WSUS policy, GPResult, MDM, ConfigMgr, Intune | Direct update owner/provenance, policy values, and feature-update result records |
 | Transport | Windows Update ETL/readable log, USO, BITS, proxy, DNS/IP/routes, time, bounded endpoint tests | Scan/download/install records, endpoints, status codes, and reachability at collection time |
@@ -17,7 +17,7 @@ Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes 
 | Servicing | Update history, packages/hotfixes, CBS/DISM, pending markers, DISM ScanHealth, SFC verify-only | Package/current-health results kept as servicing or tool-generated context unless directly part of a validated upgrade source |
 | Setup/rollback | `$WINDOWS.~BT`, Rollback, Windows.old, SetupCopyLogs, MoSetup/BlueBox, migration files, setup dumps, scoped SetupDiag | Attempt windows, source/target builds, exact failure lines/codes, deterministic phase/operation decodes, and inclusion gates |
 | Events/crashes | EVTX exports, normalized event records, reliability, WER, setup/minidumps, WHEA/disk/NTFS/BugCheck/Kernel-Power | Direct event/crash records. They are not attached to an upgrade attempt based on time alone |
-| Pre/post | Normalized inventory snapshots | Section-level changes plus full baseline/current objects for external comparison |
+| Pre/post | Normalized OS, hardware, driver/device, management/policy, servicing, disk, and network snapshots | Section-level changes plus full baseline/current objects for external comparison; application/service differences are intentionally unavailable |
 | Provenance | Collector version/time/status, source/destination, length, timestamp, SHA-256, archive verification | Reproducibility, evidence integrity, and explicit collection limits |
 
 ## Passive-first contamination boundary

@@ -2,7 +2,7 @@
 
 ## Data classification
 
-Treat every output as sensitive endpoint-management or incident-response data. Reports and evidence can contain computer names, usernames, domains, IP addresses, serial numbers, installed software, management configuration, file paths, event text, crash metadata, and raw Windows logs.
+Treat every output as sensitive endpoint-management or incident-response data. Reports and evidence can contain computer names, usernames, domains, IP addresses, serial numbers, application names reported inside Windows setup/compatibility logs, management configuration, file paths, event text, crash metadata, and raw Windows logs. Broad installed-software inventory is disabled by design.
 
 The HTML report displays a sensitive-data warning. It is self-contained and does not load fonts, scripts, styles, images, analytics, or other content from the network.
 

@@ -34,37 +34,6 @@ function Get-WudCimRecords {
     return @($records)
 }
 
-function Get-WudInstalledApplications {
-    $paths = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'Registry::HKEY_USERS\*\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
-    )
-    $items = New-Object Collections.ArrayList
-    foreach ($path in $paths) {
-        foreach ($app in @(Get-ItemProperty -Path $path -ErrorAction SilentlyContinue)) {
-            $displayName = [string](Get-WudObjectPropertyValue $app 'DisplayName')
-            if ([string]::IsNullOrWhiteSpace($displayName)) { continue }
-            $registryPath = [string](Get-WudObjectPropertyValue $app 'PSPath')
-            $scope = if ($registryPath -match 'HKEY_USERS') { 'LoadedUser' } else { 'Machine' }
-            $architecture = if ($registryPath -match 'WOW6432Node') { 'x86' } else { 'x64-or-neutral' }
-            $null = $items.Add([pscustomobject][ordered]@{
-                DisplayName     = $displayName
-                DisplayVersion  = Get-WudObjectPropertyValue $app 'DisplayVersion'
-                Publisher       = Get-WudObjectPropertyValue $app 'Publisher'
-                InstallDate     = Get-WudObjectPropertyValue $app 'InstallDate'
-                InstallLocation = Get-WudObjectPropertyValue $app 'InstallLocation'
-                UninstallString = Get-WudObjectPropertyValue $app 'UninstallString'
-                ProductCode     = Get-WudObjectPropertyValue $app 'PSChildName'
-                Scope           = $scope
-                Architecture    = $architecture
-                RegistryPath    = $registryPath
-            })
-        }
-    }
-    return @($items | Sort-Object DisplayName, DisplayVersion, Scope -Unique)
-}
-
 function Get-WudPendingRebootState {
     $componentBasedServicing = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
     $windowsUpdate = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
@@ -239,43 +208,6 @@ function Invoke-WudHardwareCollector {
     )) {
         $null = Invoke-WudProcess -Context $Context -FilePath $command.File -ArgumentList $command.Args -Name $command.Name -TimeoutSeconds 300 -ExpectedArtifacts @(Get-WudObjectPropertyValue $command 'Expected' @())
     }
-}
-
-function Invoke-WudSoftwareCollector {
-    param($Context)
-    $path = New-WudDirectory -Path (Join-Path $Context.SnapshotPath 'Inventory')
-    $applications = Get-WudInstalledApplications
-    $appx = @()
-    $provisioned = @()
-    $features = @()
-    $capabilities = @()
-    $languages = @()
-    $appx = @(Invoke-WudOptionalProvider $Context 'software' 'Get-AppxPackage -AllUsers' { Get-AppxPackage -AllUsers -ErrorAction Stop | Select-Object Name, PackageFullName, PackageFamilyName, Version, Architecture, Publisher, SignatureKind, Status, UserSid })
-    $provisioned = @(Invoke-WudOptionalProvider $Context 'software' 'Get-AppxProvisionedPackage -Online' { Get-AppxProvisionedPackage -Online -ErrorAction Stop | Select-Object DisplayName, PackageName, Version, Architecture, ResourceId })
-    $features = @(Invoke-WudOptionalProvider $Context 'software' 'Get-WindowsOptionalFeature -Online' { Get-WindowsOptionalFeature -Online -ErrorAction Stop | Select-Object FeatureName, State, RestartRequired })
-    $capabilities = @(Invoke-WudOptionalProvider $Context 'software' 'Get-WindowsCapability -Online' { Get-WindowsCapability -Online -ErrorAction Stop | Select-Object Name, State, DisplayName, Description })
-    $languages = @(Invoke-WudOptionalProvider $Context 'software' 'Get-WinUserLanguageList' { Get-WinUserLanguageList -ErrorAction Stop | Select-Object LanguageTag, Autonym, EnglishName, LocalizedName, ScriptName, InputMethodTips, Spellchecking, Handwriting })
-    $profiles = Get-WudCimRecords Win32_UserProfile -Properties @('SID', 'LocalPath', 'Loaded', 'Special', 'RoamingConfigured', 'RoamingPath', 'LastUseTime', 'Status')
-    $services = Get-WudCimRecords Win32_Service -Properties @('Name', 'DisplayName', 'State', 'StartMode', 'PathName', 'StartName', 'ServiceType', 'ExitCode', 'ProcessId')
-    $antivirus = @()
-    $antivirus = @(Invoke-WudOptionalProvider $Context 'software' 'SecurityCenter2 AntiVirusProduct' { Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop | Select-Object displayName, pathToSignedProductExe, pathToSignedReportingExe, productState, timestamp })
-    $processes = @()
-    $processes = @(Invoke-WudOptionalProvider $Context 'software' 'Get-Process' { Get-Process -ErrorAction Stop | Select-Object Name, Id, Path, Company, ProductVersion, StartTime })
-    $software = [pscustomobject][ordered]@{
-        Applications      = $applications
-        AppxPackages      = $appx
-        ProvisionedAppx   = $provisioned
-        OptionalFeatures  = $features
-        Capabilities      = $capabilities
-        Languages         = $languages
-        UserProfiles      = $profiles
-        Services          = $services
-        AntivirusProducts = $antivirus
-        Processes         = $processes
-    }
-    Write-WudJsonAtomic -Path (Join-Path $path 'software.json') -InputObject $software -Depth 20
-    $Context.Inventory['Software'] = $software
-    $null = Invoke-WudProcess -Context $Context -FilePath 'fltmc.exe' -ArgumentList @('filters') -Name 'filesystem-filters' -TimeoutSeconds 300
 }
 
 function Invoke-WudDriverCollector {
@@ -989,7 +921,13 @@ function Invoke-WudAllCollectors {
     param([Parameter(Mandatory = $true)]$Context)
     $null = Invoke-WudCollector $Context 'identity' 'Device, operating system, build, and attempt identity' { Invoke-WudIdentityCollector $Context } $true
     $null = Invoke-WudCollector $Context 'hardware' 'Hardware, firmware, boot, encryption, storage, and partitions' { Invoke-WudHardwareCollector $Context } $true
-    $null = Invoke-WudCollector $Context 'software' 'Applications, AppX, features, languages, services, profiles, and filters' { Invoke-WudSoftwareCollector $Context }
+    $Context.Inventory['Software'] = [pscustomobject][ordered]@{
+        CollectionStatus  = 'DisabledByDesign'
+        Reason            = 'Broad installed-software inventory is not collected. Windows Setup and Compatibility Appraiser evidence can still identify source-reported application blocks.'
+        Applications      = @()
+        Services          = @()
+        AntivirusProducts = @()
+    }
     $null = Invoke-WudCollector $Context 'drivers' 'PnP devices, problem codes, and driver inventory' { Invoke-WudDriverCollector $Context }
     $null = Invoke-WudCollector $Context 'management' 'Update ownership, GPO, MDM, services, proxy, network, and connectivity' { Invoke-WudManagementCollector $Context }
     $null = Invoke-WudCollector $Context 'servicing' 'Update history, packages, pending reboot, and servicing state' { Invoke-WudServicingCollector $Context } $true
@@ -1005,4 +943,4 @@ function Invoke-WudAllCollectors {
     Write-WudJsonAtomic -Path (Join-Path $Context.SnapshotPath 'inventory.json') -InputObject $Context.Inventory -Depth 30
 }
 
-Export-ModuleMember -Function @('Invoke-WudAllCollectors', 'Get-WudPendingRebootState', 'Get-WudInstalledApplications')
+Export-ModuleMember -Function @('Invoke-WudAllCollectors', 'Get-WudPendingRebootState')
