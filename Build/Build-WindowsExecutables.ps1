@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+$RuntimeIdentifiers = @($RuntimeIdentifiers | ForEach-Object { @([string]$_ -split ',') } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $toolRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Join-Path $toolRoot 'dist' }
 $version = (Get-Content -LiteralPath (Join-Path $toolRoot 'VERSION') -Raw).Trim()
@@ -21,9 +22,9 @@ foreach ($runtime in $RuntimeIdentifiers) {
     if (Test-Path -LiteralPath $publishPath) { Remove-Item -LiteralPath $publishPath -Recurse -Force }
     & dotnet publish (Join-Path $toolRoot 'Gui\WindowsUpdateAnalytics.Gui.csproj') --configuration $Configuration --runtime $runtime --self-contained true -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false --output $publishPath
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $runtime." }
-    $source = Join-Path $publishPath 'WindowsUpdateAnalytics.exe'
+    $source = Join-Path $publishPath 'WUPA.exe'
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Published executable was not found for $runtime." }
-    $destination = Join-Path $OutputPath ("WindowsUpdateAnalytics-{0}-{1}.exe" -f $version, $runtime)
+    $destination = Join-Path $OutputPath ("WUPA-{0}-{1}.exe" -f $version, $runtime)
     Copy-Item -LiteralPath $source -Destination $destination -Force
     $item = Get-Item -LiteralPath $destination
     $null = $records.Add([pscustomobject][ordered]@{
@@ -35,6 +36,6 @@ foreach ($runtime in $RuntimeIdentifiers) {
     })
     Remove-Item -LiteralPath $publishPath -Recurse -Force
 }
-$records | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputPath 'WindowsUpdateAnalytics-build.json') -Encoding UTF8
+$records | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputPath 'WUPA-build.json') -Encoding UTF8
 @($records | ForEach-Object { '{0}  {1}' -f $_.Sha256, $_.Name }) | Set-Content -LiteralPath (Join-Path $OutputPath 'Checksums.sha256') -Encoding Ascii
 $records | Format-Table -AutoSize

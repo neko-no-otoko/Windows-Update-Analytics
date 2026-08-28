@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0 — 2026-08-28
+
+- Rebranded the product as **WUPA — Windows Update Performance Analyzer**, with a flat, trademark-distinct navy/teal/amber logo and explicit independent-project notice.
+- Replaced the mode-and-settings interface with one state-aware primary workflow: start tracking, finish and report, or analyze retained evidence when 25H2 is already present. Secondary controls are limited to results, existing-log analysis, and cancellation.
+- Reduced the public PowerShell interface to `Start`, `Resume`, `Finish`, `Analyze`, and `Cancel`; target 25H2, Public Documents output, 30-day expiry, setup hooks, safe dump behavior, and network behavior are fixed product defaults.
+- Moved new durable state, tasks, runtime, launcher log, and results to the `WUPA` name while detecting and refusing to collide with active v2 cases.
+- Removed active DISM/SFC health checks, Appraiser refresh, media scan, full memory-dump hashing/copying, software/package/feature inventory, broad hardware/network/management sweeps, reliability history, general WER/SetupAPI/CBS/DISM evidence, and nonessential event channels.
+- Kept the focused evidence needed for download/install/reboot performance: recorder samples, Delivery Optimization counters, update history, update policy/services/BITS, core setup/rollback logs, WU/USO/DO native logs, focused event channels, storage readiness, problem devices, and update-critical drivers.
+- Excluded `Windows\Panther` from feature-update evidence to avoid imaging/deployment contamination; setup parsing remains gated to `$WINDOWS.~BT`, rollback, setup-hook copies, and `Windows.old` upgrade evidence.
+- Reduced state-boundary checkpoints from 64 to 8, limited each to 64 MiB, stopped duplicating event-channel exports at every checkpoint, and retained only the newest bounded Panther/Rollback/MoSetup files.
+- Removed CMD launchers, tests, documentation, and other operator-irrelevant files from the embedded executable payload while retaining repository source and regression assets.
+
 ## 2.2.1 — 2026-08-28
 
 - Changed the GUI's held-run message to **Automatic post-reboot finalization is already running** and disabled duplicate Finalize/Stop actions while another process actually owns the exclusive run lock.

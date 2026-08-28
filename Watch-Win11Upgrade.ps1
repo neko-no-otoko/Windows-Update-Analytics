@@ -4,10 +4,10 @@ param(
     [string]$TargetVersion = '25H2',
     [int]$TargetBuild = 26200,
     [ValidateRange(30, 3600)][int]$IntervalSeconds = 60,
-    [int]$ProgressBucketSize = 10,
-    [int]$MaximumCheckpoints = 64,
-    [long]$MaximumCheckpointFileBytes = 67108864,
-    [long]$MaximumCheckpointBytes = 268435456,
+    [int]$ProgressBucketSize = 100,
+    [int]$MaximumCheckpoints = 8,
+    [long]$MaximumCheckpointFileBytes = 16777216,
+    [long]$MaximumCheckpointBytes = 67108864,
     [switch]$Once
 )
 

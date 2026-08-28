@@ -1,88 +1,34 @@
-# Collected data and factual output
+# WUPA focused evidence profile
 
-Win11UpgradeDiag captures full-fidelity diagnostic evidence locally, normalizes direct records, and records what was unavailable. Version 2 adds a persistent observation window while deliberately stopping before root-cause judgment. Availability varies by Windows edition, management stack, setup stage, retention, localization, and permissions.
+WUPA collects direct Windows Update performance and feature-update evidence. It does not attempt open-ended machine inventory.
 
-## Collection matrix
+## Always collected
 
-| Family | Representative sources | Facts available to a reviewer |
-|---|---|---|
-| Identity | Device/model/serial, edition/version/build/UBR, architecture, boot/install times, source OS history, Windows image/setup state | Current source/target state, completed image state, and whether a build transition is directly visible |
-| Hardware | CPU, memory, firmware, TPM, Secure Boot, graphics, battery, disks, reliability, partitions, volumes, WinRE, BCD, BitLocker status | Exact readiness-related values and storage/boot/security state; no claim that a value caused setup to fail |
-| Compatibility | AppCompat/safeguard registry, CompatData/Appraiser XML, task result, optional media scan | Source-reported blocks/warnings and scan-only result, kept separate from a real upgrade attempt |
-| Software inventory | Disabled by design in v2.2.1. No uninstall registry, AppX/provisioned package, feature, capability, language/profile, service, security-product, process, or filesystem-filter enumeration | The normalized inventory explicitly reports `DisabledByDesign`; Windows Setup/CompatData/Appraiser can still provide source-reported application blocks |
-| Drivers/devices | PnP state/problem codes, signed drivers, driver store, `pnputil`, SetupAPI | Driver/device state and exact source-reported setup/device records |
-| Update ownership/policy | WUA history, Update ID/revision, client application, service/server selection, WUfB/WSUS policy, GPResult, MDM, ConfigMgr, Intune | Direct update owner/provenance, policy values, and feature-update result records |
-| Transport | Windows Update ETL/readable log, USO, BITS, proxy, DNS/IP/routes, time, bounded endpoint tests | Scan/download/install records, endpoints, status codes, and reachability at collection time |
-| Persistent recorder | Build/boot/Setup state every 60 seconds; `SetupProgress`; Setup processes; pending reboot; DO job size/progress/status/caller/URL; HTTP/peer/Connected Cache bytes; peer and performance snapshots | First/last observation bounds, progress percentages, observed byte deltas, latest source counters, throughput, cache share, reboot gaps, and state changes. It does not claim why an unobserved interval occurred |
-| Servicing | Update history, packages/hotfixes, CBS/DISM, pending markers, DISM ScanHealth, SFC verify-only | Package/current-health results kept as servicing or tool-generated context unless directly part of a validated upgrade source |
-| Setup/rollback | `$WINDOWS.~BT`, Rollback, Windows.old, SetupCopyLogs, MoSetup/BlueBox, migration files, setup dumps, scoped SetupDiag | Attempt windows, source/target builds, exact failure lines/codes, deterministic phase/operation decodes, and inclusion gates |
-| Events/crashes | EVTX exports, normalized event records, reliability, WER, setup/minidumps, WHEA/disk/NTFS/BugCheck/Kernel-Power | Direct event/crash records. They are not attached to an upgrade attempt based on time alone |
-| Pre/post | Normalized OS, hardware, driver/device, management/policy, servicing, disk, and network snapshots | Section-level changes plus full baseline/current objects for external comparison; application/service differences are intentionally unavailable |
-| Provenance | Collector version/time/status, source/destination, length, timestamp, SHA-256, archive verification | Reproducibility, evidence integrity, and explicit collection limits |
+- OS/build, source-OS history, boot identity, model, BIOS, locale, and image/setup state
+- OS volume free space, disks/partitions/volumes, WinRE, BitLocker, and Secure Boot state
+- problem devices and signed-driver facts limited to display, storage, network, system, and unsigned drivers
+- Windows Update and Delivery Optimization policies, core service state, BITS jobs, configured update endpoints, proxy, and time status
+- Windows Update history and pending-reboot markers
+- `$WINDOWS.~BT\Sources\Panther`, `$WINDOWS.~BT\Sources\Rollback`, `Windows\Logs\MoSetup`, existing SetupDiag, Windows Update ETLs, USO logs, Delivery Optimization logs, setup-hook copies, and `Windows.old` Panther evidence when present
+- native System, Setup, Setup Operational, MoSetup, Windows Update Client, Update Orchestrator, and Delivery Optimization event channels
+- readable Windows Update conversion and bounded Delivery Optimization status, peer, performance, configuration, and log records
+- Microsoft-signed SetupDiag analysis against the newest scoped feature-update source
 
-## Passive-first contamination boundary
+## Persistent record
 
-Each phase captures raw logs before running DISM, SFC, Compatibility Appraiser, media compatibility scan, or SetupDiag. This prevents the current diagnostic pass from being copied back into its own passive baseline.
+Every 60 seconds WUPA appends an observation containing current build, boot identity, setup process/state, pending-reboot signals, update progress, Delivery Optimization file/byte/source counters, and owned outcome markers. State changes create at most eight checkpoints. Each checkpoint is capped at 64 MiB and retains only the newest bounded Panther, Rollback, and MoSetup files. Event logs and transport logs are not duplicated into each checkpoint.
 
-- DISM ScanHealth uses a run-owned `/LogPath` under `CurrentDiagnostics`.
-- SFC can still write to the system CBS log; because CBS was copied first, that new entry is not part of the same phase's passive snapshot.
-- A later phase may observe an earlier diagnostic record, but CBS/DISM sources remain `GeneralWindowsServicing` or `ToolGenerated`, never upgrade evidence by time alone.
-- SetupDiag is restricted to the newest copied feature-upgrade-style directory and never receives `Windows\Panther`, `Commands`, `CurrentDiagnostics`, or media-scan paths. Its result is emitted only when its exact input attempt later passes all Windows Update gates.
+## Excluded by design
 
-## Persistent sampling and checkpoint boundary
+- installed applications, AppX packages, services, security-product inventory, and filesystem filters
+- complete drivers/devices, hardware, memory, battery, graphics, network, VPN, route, MDM, ConfigMgr, group-policy, and enrollment inventories
+- package, feature, capability, language, hotfix, and component-store sweeps
+- active DISM ScanHealth, SFC, Compatibility Appraiser refresh, and setup media scan
+- CBS/DISM logs, broad WER/reliability history, SetupAPI logs, minidump sweeps, and full `MEMORY.DMP`
+- general `Windows\Panther`, which may describe initial imaging rather than a Windows Update feature upgrade
 
-- The recorder writes one append-only JSON object per sample and flushes it before sleeping. A torn final write does not invalidate prior lines.
-- Delivery Optimization status and performance are sampled every interval. Configuration and monthly snapshots are captured at initial/final boundaries to limit file growth. `Get-DeliveryOptimizationLog` is never called with `-Flush` during active monitoring.
-- Generic Delivery Optimization jobs are labeled transport context. A Windows Update caller or Microsoft update URL can establish Windows Update transport ownership, but it still cannot prove that the bytes belong to the 25H2 feature update.
-- State, boot identity, build, or 10-percent Setup progress bucket changes create a checkpoint. Checkpoints copy bounded native files and export native EVTX without converting them.
-- Downlevel, SafeOS, FirstBoot, and OOBE labels require a recent Setup marker from a file modified within the armed run window plus current Setup activity. Historical imaging text alone cannot activate a phase.
-- Final collection stops the recorder first, appends an explicit final boundary, then performs the heavy passive-first collection.
+Missing optional sources are recorded. Core setup evidence missing after an attempted final collection is a material coverage gap.
 
-## Windows Update attempt gates
+## External review
 
-Every setup candidate is preserved in `Attempts.json`. Inclusion requires all of these direct/transparent gates:
-
-1. It is not a byte-identical duplicate already represented by another source.
-2. It is not `/Compat ScanOnly`.
-3. It is not generated by this tool.
-4. It is not in the `Windows\Panther` initial-deployment source and contains no direct imaging/deployment semantics.
-5. It contains feature-upgrade semantics.
-6. Windows Update ownership is present in setup text, WUA history, BlueBox, or the readable Windows Update log.
-7. The ownership evidence overlaps the setup window.
-8. The target version/build is present.
-9. Windows reports a completed image state.
-
-Only then is it `WindowsUpdateFeatureUpgrade`. Missing a gate is an exclusion, not a negative health conclusion.
-
-## Active commands
-
-```text
-dism.exe /Online /Cleanup-Image /ScanHealth /LogPath:<run-owned-path>
-sfc.exe /verifyonly
-Get-WindowsUpdateLog
-Get-DeliveryOptimizationLog
-Get-DeliveryOptimizationStatus
-Get-DeliveryOptimizationStatus -PeerInfo
-Get-DeliveryOptimizationPerfSnap
-Get-DeliveryOptimizationPerfSnapThisMonth
-Get-DOConfig -Verbose
-SetupDiag.exe /NoTel /LogsPath <scoped-upgrade-source> ...
-setup.exe /auto upgrade /compat scanonly ...
-```
-
-The media command requires matching media and explicit `-AcceptWindowsEula`; Dynamic Update is disabled. The tool never runs RestoreHealth, SFC repair, CHKDSK repair, cache deletion, update installation, driver removal, or safeguard bypass.
-
-## Fact types and evidence references
-
-- `Observed`: collector-read value or source line.
-- `SourceReported`: Windows Update, Windows Setup, or scoped SetupDiag result.
-- `Decoded`: documented error symbol or Setup extend-code phase/operation.
-- `Computed`: Boolean scope gate, count, or pre/post comparison.
-
-Every fact carries an evidence locator. Text excerpts are bounded and HTML/CSV safe. Full source content stays in `Evidence.zip`; compact excerpts and hashes go into `ReviewBundle.zip`.
-
-## Deliberate exclusions
-
-The tool never collects passwords, tokens, browser data, Wi-Fi keys, certificate private keys, or BitLocker recovery passwords. It does not upload data, execute AI, name a root cause, infer a driver from `0xC1900101` alone, or link an event to setup solely because timestamps are close.
-
-`MEMORY.DMP` is metadata and SHA-256 only unless `-IncludeLargeDumps` is requested and capacity permits. Setup-specific and ordinary minidumps are copied by default when readable.
+`ReviewBundle.zip` contains normalized case, recorder, attempts, facts, timeline, update history, coverage, excluded-evidence decisions, hashes, and bounded excerpts. It is designed to be ingestible without executing code. WUPA itself never uploads it.

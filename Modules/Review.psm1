@@ -758,7 +758,7 @@ function Get-WudEvidenceScopeClass {
         $prefix = [string]$attempt.SourceDirectory
         if ($prefix -and $normalized.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return [string]$attempt.Classification }
     }
-    if ($normalized -match '(?i)/Raw/(?:WindowsBT|WindowsOld|Win11UpgradeDiag-SetupCopyLogs)') { return 'UnclassifiedSetupEvidence' }
+    if ($normalized -match '(?i)/Raw/(?:WindowsBT|WindowsOld|WUPA-SetupCopyLogs)') { return 'UnclassifiedSetupEvidence' }
     return 'ContextEvidence'
 }
 
@@ -851,7 +851,7 @@ function Export-WudReviewBundle {
     Write-WudJsonLines -Path (Join-Path $staging 'EvidenceIndex.jsonl') -Records @($evidenceIndex)
 
     $readMe = @'
-# Windows Update Analytics — external review bundle
+# WUPA — external review bundle
 
 This archive is sensitive. It can contain device names, users, domains, paths, network identifiers, serial numbers, software inventory, and bounded log excerpts.
 

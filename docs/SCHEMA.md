@@ -1,14 +1,14 @@
-# Output schema
+# WUPA output schema
 
 ## Versioning policy
 
-Version 2 advances the fleet schema to numeric version `2` and semantic version `2.0.0` because the outcome contract is intentionally split and persistent-recorder records are now first-class. Consumers should ignore unknown properties and preserve `null` as distinct from empty or zero. The tool, target map, legacy rule catalog, and output schema are versioned independently.
+WUPA 3 retains numeric schema version `2` and semantic schema version `2.0.0` so existing fact-only review consumers remain compatible. Consumers should ignore unknown properties and preserve `null` as distinct from empty or zero. The application, target map, parser data, and output schema are versioned independently.
 
 ## Summary.json
 
 `Summary.json` remains the stable fleet-ingestion contract. Its machine-readable draft 2020-12 schema is `Data/Summary.schema.json`.
 
-Core v2 properties are:
+Core properties are:
 
 | Property | Meaning |
 |---|---|

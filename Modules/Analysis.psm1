@@ -514,7 +514,7 @@ function Add-WudInventoryFindings {
     foreach ($bypass in @(Find-WudRegistryValue -Path $policyFile -Name 'DisableWUfBSafeguards')) {
         $bypassValue = 0
         if ([int]::TryParse([string]$bypass.Value, [ref]$bypassValue) -and $bypassValue -eq 1) {
-            Add-WudCustomFinding $Context 'WUD-SAFEGUARD-BYPASS-POLICY' 'Policy' 'Warning' 'High' 'Policy disables Windows Update safeguard protections' 'The effective policy permits feature updates to be offered without normal safeguard-hold protection. Win11UpgradeDiag does not change this policy or bypass a hold.' 'Management\policy-windows-update.json' ("$($bypass.Path): DisableWUfBSafeguards=1") @('https://learn.microsoft.com/windows/deployment/update/safeguard-opt-out') 'safeguard-policy'
+            Add-WudCustomFinding $Context 'WUD-SAFEGUARD-BYPASS-POLICY' 'Policy' 'Warning' 'High' 'Policy disables Windows Update safeguard protections' 'The effective policy permits feature updates to be offered without normal safeguard-hold protection. WUPA does not change this policy or bypass a hold.' 'Management\policy-windows-update.json' ("$($bypass.Path): DisableWUfBSafeguards=1") @('https://learn.microsoft.com/windows/deployment/update/safeguard-opt-out') 'safeguard-policy'
         }
     }
     $uxPolicyFile = Join-Path (Join-Path $Context.SnapshotPath 'Management') 'ux-settings.json'

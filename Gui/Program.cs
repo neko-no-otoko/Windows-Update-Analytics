@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using System.Diagnostics;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -5,7 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace WindowsUpdateAnalytics;
+namespace Wupa;
 
 internal static class Program
 {
@@ -21,52 +22,46 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            var logPath = StartupFailureLog.TryWrite(ex);
-            var detail = string.IsNullOrWhiteSpace(logPath)
-                ? ex.ToString()
-                : $"{ex}\n\nStartup details were saved to:\n{logPath}";
-            MessageBox.Show(detail, "Windows Update Analytics could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            var path = StartupFailureLog.TryWrite(ex);
+            var detail = string.IsNullOrWhiteSpace(path) ? ex.ToString() : $"{ex}\n\nDetails were saved to:\n{path}";
+            MessageBox.Show(detail, "WUPA could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 }
 
 internal sealed class MainForm : Form
 {
-    private const string AppVersion = "2.2.1";
+    private const string AppVersion = "3.0.0";
+    private const int TargetBuild = 26200;
     private readonly Label _status = new();
     private readonly Label _statusDetail = new();
-    private readonly TextBox _outputPath = new();
-    private readonly TextBox _copyTo = new();
-    private readonly TextBox _mediaPath = new();
-    private readonly ComboBox _target = new();
-    private readonly NumericUpDown _armDays = new();
-    private readonly CheckBox _acceptEula = new();
-    private readonly CheckBox _largeDumps = new();
-    private readonly CheckBox _noInternet = new();
-    private readonly CheckBox _noHooks = new();
-    private readonly TextBox _log = new();
-    private readonly ToolTip _statusToolTip = new();
-    private readonly Button _start = new();
-    private readonly Button _finalize = new();
-    private readonly Button _forensic = new();
-    private readonly Button _disarm = new();
+    private readonly Label _stage = new();
+    private readonly Button _primary = new();
+    private readonly Button _analyze = new();
     private readonly Button _openReport = new();
-    private readonly Button _openEvidence = new();
-    private readonly System.Windows.Forms.Timer _stateTimer = new();
-    private bool _busy;
+    private readonly Button _openFolder = new();
+    private readonly Button _cancel = new();
+    private readonly Button _details = new();
+    private readonly TextBox _log = new();
+    private readonly Panel _detailsPanel = new();
+    private readonly System.Windows.Forms.Timer _timer = new();
     private string? _runtimePath;
     private string? _lastOutputPath;
-    private string? _lastCollectorStatusLine;
+    private string? _lastCollectorLine;
+    private bool _busy;
+    private bool _detailsVisible;
+    private string _primaryAction = "Start";
     private DateTime _actionStartedUtc;
 
     public MainForm()
     {
-        Text = $"Windows Update Analytics {AppVersion}";
+        Text = $"WUPA {AppVersion}";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(920, 720);
-        Size = new Size(1040, 800);
-        BackColor = Color.FromArgb(245, 247, 250);
-        Font = new Font("Segoe UI", 9F);
+        MinimumSize = new Size(760, 560);
+        Size = new Size(820, 640);
+        BackColor = Color.FromArgb(244, 247, 250);
+        Font = new Font("Segoe UI", 9.5F);
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
         BuildInterface();
         Load += OnLoaded;
         FormClosing += OnClosing;
@@ -74,14 +69,8 @@ internal sealed class MainForm : Form
 
     private void BuildInterface()
     {
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(20),
-            RowCount = 5,
-            ColumnCount = 1,
-            AutoScroll = true
-        };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24), ColumnCount = 1, RowCount = 6 };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -89,339 +78,179 @@ internal sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(root);
 
-        var heading = new Panel { Dock = DockStyle.Top, Height = 74, BackColor = Color.FromArgb(18, 43, 70), Padding = new Padding(18, 12, 18, 8) };
-        heading.Controls.Add(new Label
-        {
-            Text = "Windows Update Analytics",
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI Semibold", 18F),
-            Dock = DockStyle.Top,
-            AutoSize = true
-        });
-        heading.Controls.Add(new Label
-        {
-            Text = "Persistent Windows 11 feature-update evidence recorder",
-            ForeColor = Color.FromArgb(194, 216, 238),
-            Dock = DockStyle.Bottom,
-            AutoSize = true
-        });
+        var heading = new Panel { Dock = DockStyle.Top, Height = 88, BackColor = Color.FromArgb(6, 38, 70), Padding = new Padding(16) };
+        var logo = new PictureBox { Location = new Point(14, 12), Size = new Size(62, 62), SizeMode = PictureBoxSizeMode.Zoom };
+        try { logo.Image = Icon?.ToBitmap(); } catch { }
+        heading.Controls.Add(logo);
+        heading.Controls.Add(new Label { Text = "WUPA", ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 21F), Location = new Point(88, 12), AutoSize = true });
+        heading.Controls.Add(new Label { Text = "Windows Update Performance Analyzer", ForeColor = Color.FromArgb(183, 223, 237), Font = new Font("Segoe UI", 10.5F), Location = new Point(91, 54), AutoSize = true });
         root.Controls.Add(heading);
 
-        var statusPanel = new Panel { Dock = DockStyle.Top, Height = 96, BackColor = Color.White, Padding = new Padding(16), Margin = new Padding(0, 12, 0, 12) };
-        _status.Text = "Loading status…";
-        _status.Font = new Font("Segoe UI Semibold", 13F);
-        _status.ForeColor = Color.FromArgb(18, 43, 70);
+        var statusCard = new Panel { Dock = DockStyle.Top, Height = 142, BackColor = Color.White, Padding = new Padding(18), Margin = new Padding(0, 14, 0, 12) };
+        _status.Text = "Checking this computer…";
+        _status.Font = new Font("Segoe UI Semibold", 15F);
+        _status.ForeColor = Color.FromArgb(6, 38, 70);
         _status.Dock = DockStyle.Top;
         _status.AutoSize = true;
-        _statusDetail.Text = "Inspecting the durable case state.";
-        _statusDetail.ForeColor = Color.FromArgb(75, 85, 99);
-        _statusDetail.Dock = DockStyle.Bottom;
-        _statusDetail.Height = 40;
-        _statusDetail.AutoSize = false;
+        _statusDetail.Text = "Loading the focused Windows Update collector.";
+        _statusDetail.ForeColor = Color.FromArgb(70, 80, 92);
+        _statusDetail.Location = new Point(18, 56);
+        _statusDetail.Width = 720;
+        _statusDetail.Height = 44;
         _statusDetail.AutoEllipsis = true;
-        statusPanel.Controls.Add(_statusDetail);
-        statusPanel.Controls.Add(_status);
-        root.Controls.Add(statusPanel);
+        _stage.Text = "Target: Windows 11 25H2  •  Results: Public Documents";
+        _stage.ForeColor = Color.FromArgb(0, 119, 125);
+        _stage.Font = new Font("Segoe UI Semibold", 9.5F);
+        _stage.Location = new Point(18, 112);
+        _stage.AutoSize = true;
+        statusCard.Controls.Add(_stage);
+        statusCard.Controls.Add(_statusDetail);
+        statusCard.Controls.Add(_status);
+        root.Controls.Add(statusCard);
 
-        var actionPanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Margin = new Padding(0, 0, 0, 12) };
-        ConfigureAction(_start, "Start monitoring", Color.FromArgb(0, 102, 204), async (_, _) => await RunModeAsync("Preflight"));
-        ConfigureAction(_finalize, "Finalize and build report", Color.FromArgb(0, 122, 102), (_, _) => FinalizeOrCopyAsync());
-        ConfigureAction(_forensic, "One-time forensic report", Color.FromArgb(88, 80, 141), async (_, _) => await RunModeAsync("Forensic"));
-        ConfigureAction(_disarm, "Stop monitoring", Color.FromArgb(160, 72, 40), (_, _) => ConfirmDisarmAsync());
-        ConfigureAction(_openReport, "Open latest report", Color.FromArgb(70, 82, 95), (_, _) => OpenLatestReport());
-        ConfigureAction(_openEvidence, "Open case folder", Color.FromArgb(70, 82, 95), (_, _) => OpenCaseFolder());
-        actionPanel.Controls.AddRange(new Control[] { _start, _finalize, _forensic, _disarm, _openReport, _openEvidence });
-        root.Controls.Add(actionPanel);
+        ConfigureButton(_primary, "Start tracking the 25H2 update", Color.FromArgb(0, 113, 188), 48);
+        _primary.Dock = DockStyle.Top;
+        _primary.Font = new Font("Segoe UI Semibold", 11F);
+        _primary.Click += async (_, _) => await ConfirmAndRunPrimaryAsync();
+        root.Controls.Add(_primary);
 
-        // SplitterDistance and panel minimums cannot be assigned safely until
-        // WinForms has calculated the DPI-scaled client height. Assigning them
-        // in the initializer can terminate startup on a freshly laid-out form.
-        var middle = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
-        Shown += (_, _) => ConfigureSplitter(middle);
-        middle.Panel1.Controls.Add(BuildSettingsPanel());
+        var secondary = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Margin = new Padding(0, 12, 0, 8) };
+        ConfigureButton(_analyze, "Analyze existing update logs", Color.FromArgb(65, 76, 90), 34);
+        ConfigureButton(_openReport, "Open latest report", Color.FromArgb(65, 76, 90), 34);
+        ConfigureButton(_openFolder, "Open results folder", Color.FromArgb(65, 76, 90), 34);
+        ConfigureButton(_cancel, "Cancel tracking", Color.FromArgb(146, 67, 42), 34);
+        _analyze.Click += async (_, _) => await RunActionAsync("Analyze");
+        _openReport.Click += (_, _) => OpenLatestReport();
+        _openFolder.Click += (_, _) => OpenBestFolder();
+        _cancel.Click += async (_, _) => await ConfirmCancelAsync();
+        secondary.Controls.AddRange(new Control[] { _analyze, _openReport, _openFolder, _cancel });
+        root.Controls.Add(secondary);
+
+        _detailsPanel.Dock = DockStyle.Fill;
+        _detailsPanel.Visible = false;
         _log.Dock = DockStyle.Fill;
         _log.Multiline = true;
         _log.ReadOnly = true;
         _log.ScrollBars = ScrollBars.Both;
         _log.WordWrap = false;
         _log.Font = new Font("Consolas", 8.5F);
-        _log.BackColor = Color.FromArgb(20, 25, 31);
-        _log.ForeColor = Color.FromArgb(220, 230, 238);
-        middle.Panel2.Controls.Add(_log);
-        root.Controls.Add(middle);
+        _log.BackColor = Color.FromArgb(20, 27, 35);
+        _log.ForeColor = Color.FromArgb(220, 231, 239);
+        _detailsPanel.Controls.Add(_log);
+        root.Controls.Add(_detailsPanel);
 
-        var footer = new Label
-        {
-            Text = "Preflight arms monitoring but does not publish a report. Reports are created only after automatic completion, Finalize, or Forensic collection.",
-            AutoSize = true,
-            ForeColor = Color.FromArgb(75, 85, 99),
-            Padding = new Padding(0, 8, 0, 0)
-        };
+        var footer = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true };
+        _details.Text = "Show technical details";
+        _details.AutoSize = true;
+        _details.FlatStyle = FlatStyle.Flat;
+        _details.FlatAppearance.BorderSize = 0;
+        _details.ForeColor = Color.FromArgb(0, 96, 160);
+        _details.Click += (_, _) => ToggleDetails();
+        footer.Controls.Add(_details);
+        footer.Controls.Add(new Label { Text = "Read-only: WUPA never installs updates or applies repairs.", AutoSize = true, ForeColor = Color.FromArgb(92, 100, 112), Padding = new Padding(16, 7, 0, 0) });
         root.Controls.Add(footer);
     }
 
-    private static void ConfigureSplitter(SplitContainer middle)
-    {
-        var available = middle.ClientSize.Height - middle.SplitterWidth;
-        if (available < 300) return;
-        middle.Panel1MinSize = 160;
-        middle.Panel2MinSize = 120;
-        middle.SplitterDistance = Math.Clamp(238, middle.Panel1MinSize, available - middle.Panel2MinSize);
-    }
-
-    private Control BuildSettingsPanel()
-    {
-        var group = new GroupBox { Text = "Collection settings", Dock = DockStyle.Fill, Padding = new Padding(12) };
-        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 5 };
-        for (var row = 0; row < grid.RowCount; row++) grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-
-        _target.DropDownStyle = ComboBoxStyle.DropDownList;
-        _target.Items.Add("25H2");
-        _target.SelectedIndex = 0;
-        _armDays.Minimum = 1;
-        _armDays.Maximum = 365;
-        _armDays.Value = 30;
-        AddSetting(grid, 0, "Target", _target, "Keep monitoring (days)", _armDays);
-
-        _outputPath.Text = GetPublicDocuments();
-        var outputPicker = BuildPathPicker(_outputPath, false);
-        AddSetting(grid, 1, "Final report parent", outputPicker, "Optional UNC copy", _copyTo);
-
-        var mediaPicker = BuildPathPicker(_mediaPath, false);
-        _acceptEula.Text = "Accept Windows EULA for media scan";
-        _acceptEula.AutoSize = true;
-        AddSetting(grid, 2, "Optional 25H2 media", mediaPicker, "Media scan", _acceptEula);
-
-        _largeDumps.Text = "Include full MEMORY.DMP when capacity permits";
-        _noInternet.Text = "Do not test public endpoints or download SetupDiag";
-        _noHooks.Text = "Do not add SetupConfig outcome hooks";
-        foreach (var box in new[] { _largeDumps, _noInternet, _noHooks }) box.AutoSize = true;
-        grid.Controls.Add(_largeDumps, 0, 3);
-        grid.SetColumnSpan(_largeDumps, 2);
-        grid.Controls.Add(_noInternet, 2, 3);
-        grid.SetColumnSpan(_noInternet, 2);
-        grid.Controls.Add(_noHooks, 0, 4);
-        grid.SetColumnSpan(_noHooks, 2);
-
-        group.Controls.Add(grid);
-        return group;
-    }
-
-    private static void AddSetting(TableLayoutPanel grid, int row, string leftLabel, Control left, string rightLabel, Control right)
-    {
-        var first = new Label { Text = leftLabel, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(0, 5, 8, 0) };
-        var second = new Label { Text = rightLabel, AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(18, 5, 8, 0) };
-        left.Dock = DockStyle.Fill;
-        right.Dock = DockStyle.Fill;
-        grid.Controls.Add(first, 0, row);
-        grid.Controls.Add(left, 1, row);
-        grid.Controls.Add(second, 2, row);
-        grid.Controls.Add(right, 3, row);
-    }
-
-    private static Control BuildPathPicker(TextBox textBox, bool filesOnly)
-    {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 1, Margin = new Padding(0) };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        textBox.Dock = DockStyle.Fill;
-        var browse = new Button { Text = "…", Width = 34, Height = 25, Margin = new Padding(4, 0, 0, 0) };
-        browse.Click += (_, _) =>
-        {
-            using var picker = new FolderBrowserDialog { ShowNewFolderButton = !filesOnly };
-            if (Directory.Exists(textBox.Text)) picker.SelectedPath = textBox.Text;
-            if (picker.ShowDialog() == DialogResult.OK) textBox.Text = picker.SelectedPath;
-        };
-        panel.Controls.Add(textBox, 0, 0);
-        panel.Controls.Add(browse, 1, 0);
-        return panel;
-    }
-
-    private static void ConfigureAction(Button button, string text, Color color, EventHandler click)
+    private static void ConfigureButton(Button button, string text, Color color, int height)
     {
         button.Text = text;
         button.AutoSize = true;
-        button.Height = 34;
-        button.Padding = new Padding(10, 0, 10, 0);
+        button.Height = height;
+        button.Padding = new Padding(14, 0, 14, 0);
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderSize = 0;
         button.BackColor = color;
         button.ForeColor = Color.White;
         button.Margin = new Padding(0, 0, 8, 8);
-        button.Click += click;
     }
 
     private async void OnLoaded(object? sender, EventArgs e)
     {
         try
         {
-            AppendLog("Preparing the verified embedded diagnostic engine…");
+            AppendLog("Preparing the verified embedded WUPA collector…");
             _runtimePath = await Task.Run(() => PayloadManager.EnsureExtracted(AppVersion));
-            AppendLog($"Runtime ready: {_runtimePath}");
+            AppendLog($"Collector ready: {_runtimePath}");
             RefreshState();
-            _stateTimer.Interval = 5000;
-            _stateTimer.Tick += (_, _) => { if (!_busy) RefreshState(); };
-            _stateTimer.Start();
+            _timer.Interval = 5000;
+            _timer.Tick += (_, _) => { if (!_busy) RefreshState(); };
+            _timer.Start();
         }
         catch (Exception ex)
         {
-            SetStatus("Application could not start", ex.Message, true);
+            SetStatus("WUPA could not start", ex.Message, true);
             AppendLog(ex.ToString());
-            MessageBox.Show(this, ex.Message, "Windows Update Analytics", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, ex.Message, "WUPA", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
-    private async void ConfirmFinalizeAsync()
+    private async Task ConfirmAndRunPrimaryAsync()
     {
-        var answer = MessageBox.Show(this,
-            "Finalize stops persistent monitoring, takes one final checkpoint, builds the report, and removes this case's tasks and hooks. Continue?",
-            "Finalize monitored case", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        if (answer == DialogResult.Yes) await RunModeAsync("Finalize");
-    }
-
-    private async void FinalizeOrCopyAsync()
-    {
-        var active = ActiveRunInfo.TryRead();
-        if (active?.ProbeRunLock() == RunLockStatus.Held)
+        if (_primaryAction == "Finish")
         {
-            ShowAutomaticFinalizationStatus(active, true);
-            return;
+            var answer = MessageBox.Show(this, "Finish tracking now? WUPA will stop its recorder, collect the final update evidence, build the report, and remove this case's scheduled tasks and setup hooks.", "Finish and create report", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (answer != DialogResult.Yes) return;
         }
-        if (active?.Status.Equals("AwaitingInteractiveCopy", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            await RunModeAsync("Resume");
-            return;
-        }
-        ConfirmFinalizeAsync();
+        await RunActionAsync(_primaryAction);
     }
 
-    private async void ConfirmDisarmAsync()
+    private async Task ConfirmCancelAsync()
     {
-        var answer = MessageBox.Show(this,
-            "Stop monitoring removes this case's scheduled tasks and hooks but does not create a report. Existing evidence remains in ProgramData. Continue?",
-            "Stop monitoring", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-        if (answer == DialogResult.Yes) await RunModeAsync("Disarm");
+        var answer = MessageBox.Show(this, "Cancel tracking without creating a report? WUPA will remove this case's scheduled tasks and setup hooks. Evidence already recorded in ProgramData is retained.", "Cancel tracking", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (answer == DialogResult.Yes) await RunActionAsync("Cancel");
     }
 
-    private async Task RunModeAsync(string mode)
+    private async Task RunActionAsync(string action)
     {
         if (_busy || string.IsNullOrWhiteSpace(_runtimePath)) return;
-        if (!ValidateSettings(mode)) return;
-
         _busy = true;
         _actionStartedUtc = DateTime.UtcNow;
-        SetBusyState(true);
+        SetBusy(true);
         _log.Clear();
-        SetStatus($"{ModeTitle(mode)} is running", "Keep this window open. Detailed progress appears below.", false);
-        AppendLog($"Starting {mode} at {_actionStartedUtc:O}");
-
+        SetStatus(ActionTitle(action), "Keep this window open while the collector works.", false);
+        AppendLog($"Starting {action} at {_actionStartedUtc:O}");
         var activeBefore = ActiveRunInfo.TryRead();
-        if (activeBefore?.OutputPath is { Length: > 0 }) _lastOutputPath = activeBefore.OutputPath;
+        if (!string.IsNullOrWhiteSpace(activeBefore?.OutputPath)) _lastOutputPath = activeBefore.OutputPath;
+
         try
         {
-            var backend = await RunBackendAsync(mode);
-            var exitCode = backend.ExitCode;
-            RefreshState();
+            var result = await RunBackendAsync(action);
+            RefreshState(false);
             var activeAfter = ActiveRunInfo.TryRead();
-            if (activeAfter?.OutputPath is { Length: > 0 }) _lastOutputPath = activeAfter.OutputPath;
-
-            if (mode == "Preflight")
+            if (!string.IsNullOrWhiteSpace(activeAfter?.OutputPath)) _lastOutputPath = activeAfter.OutputPath;
+            if (action == "Start")
             {
-                if (activeAfter is not null && activeAfter.Status.StartsWith("Armed", StringComparison.OrdinalIgnoreCase))
-                {
-                    var recorderVerified = activeAfter.RecorderStartStatus.Equals("Started", StringComparison.OrdinalIgnoreCase);
-                    SetStatus(recorderVerified ? "Monitoring is armed" : "Recorder startup was not verified",
-                        recorderVerified
-                            ? $"Run {activeAfter.RunId} is recording. No final report has been created. Armed until {activeAfter.ExpiresUtcLocal}."
-                            : $"Run {activeAfter.RunId} was staged, but the persistent recorder returned '{activeAfter.RecorderStartStatus}'. Review the progress log before starting the upgrade.",
-                        !recorderVerified || exitCode != 0);
-                    MessageBox.Show(this,
-                        recorderVerified
-                            ? $"Monitoring is armed for run {activeAfter.RunId}.\n\nNo report was created because the upgrade has not finished. The final report will be built automatically after a terminal outcome, or when you select Finalize and build report.\n\nExit code: {exitCode}"
-                            : $"The case was staged, but persistent recorder startup was not verified.\n\nRecorder status: {activeAfter.RecorderStartStatus}\nExit code: {exitCode}\n\nDo not treat this as a healthy monitored case until the recorded error is resolved.",
-                        "Preflight complete", MessageBoxButtons.OK, exitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-                }
-                else
-                {
-                    throw new InvalidOperationException($"Preflight exited with code {exitCode}, but no armed run state could be verified.");
-                }
+                if (activeAfter is null) throw new InvalidOperationException($"The collector exited with code {result.ExitCode}, but no tracked case was created. {result.LastMessage}");
+                var ready = activeAfter.RecorderStartStatus.Equals("Started", StringComparison.OrdinalIgnoreCase);
+                SetStatus(ready ? "Ready for the 25H2 update" : "Tracking needs attention", ready ? "You can close WUPA and start the update normally. Tracking continues across reboots." : $"Recorder startup returned '{activeAfter.RecorderStartStatus}'. Open technical details before starting the update.", !ready);
+                MessageBox.Show(this, ready ? "WUPA is ready. You can close this app and start the Windows 11 25H2 update normally. Tracking continues across reboots and finishes automatically after a terminal result." : "The tracking case was created, but recorder startup was not verified. Review the technical details before starting the update.", ready ? "Ready for the update" : "Tracking needs attention", MessageBoxButtons.OK, ready ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             }
-            else if (mode is "Finalize" or "Forensic" or "Resume")
+            else if (action is "Finish" or "Resume" or "Analyze")
             {
-                if (backend.RunLockCollision)
-                {
-                    ShowAutomaticFinalizationStatus(activeAfter ?? activeBefore, true);
-                    return;
-                }
-                var expectedReport = string.IsNullOrWhiteSpace(activeBefore?.OutputPath) ? null : Path.Combine(activeBefore.OutputPath, "Report.html");
-                var report = expectedReport is not null && File.Exists(expectedReport)
-                    ? expectedReport
-                    : activeBefore is null
-                        ? FindLatestReport(_actionStartedUtc.AddSeconds(-5))
-                        : null;
-                if (report is not null)
-                {
-                    SetStatus(exitCode >= 30 ? "Report created with collection limitations" : "Report created",
-                        report, exitCode >= 30);
-                    _lastOutputPath = Path.GetDirectoryName(report);
-                    var answer = MessageBox.Show(this, $"Report collection finished with exit code {exitCode}.\n\nOpen the report now?", "Report ready", MessageBoxButtons.YesNo, exitCode >= 30 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
-                    if (answer == DialogResult.Yes) OpenPath(report);
-                }
-                else
-                {
-                    var detail = backend.LastMessage ?? $"Backend exit code: {exitCode}";
-                    SetStatus(exitCode >= 30 ? "Collection failed before a report was created" : "Collection finished without a report",
-                        detail, true);
-                    MessageBox.Show(this,
-                        $"No new report was created.\n\n{detail}\n\nBackend exit code: {exitCode}",
-                        "No report created", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
+                if (result.RunLockCollision) { ShowAutomaticFinalization(activeAfter ?? activeBefore, true); return; }
+                var report = FindLatestReport(_actionStartedUtc.AddSeconds(-5));
+                if (report is null) throw new InvalidOperationException(result.LastMessage ?? $"The collector exited with code {result.ExitCode} without creating a report.");
+                _lastOutputPath = Path.GetDirectoryName(report);
+                SetStatus(result.ExitCode >= 30 ? "Report created with evidence gaps" : "Report ready", report, result.ExitCode >= 30);
+                if (MessageBox.Show(this, $"WUPA finished with exit code {result.ExitCode}.\n\nOpen the report now?", "Report ready", MessageBoxButtons.YesNo, result.ExitCode >= 30 ? MessageBoxIcon.Warning : MessageBoxIcon.Information) == DialogResult.Yes) OpenPath(report);
             }
-            else if (mode == "Disarm")
-            {
-                SetStatus("Monitoring stopped", "Owned tasks and hooks were removed. Existing evidence was retained; no report was created.", exitCode != 0);
-            }
+            else if (action == "Cancel") SetStatus("Tracking canceled", "Scheduled tasks and setup hooks owned by this case were removed. Existing staged evidence was retained.", result.ExitCode != 0);
         }
         catch (Exception ex)
         {
-            SetStatus($"{ModeTitle(mode)} failed", ex.Message, true);
+            SetStatus($"{ActionTitle(action)} failed", ex.Message, true);
             AppendLog(ex.ToString());
-            MessageBox.Show(this, ex.Message, "Windows Update Analytics", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, ex.Message, "WUPA", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
             _busy = false;
-            SetBusyState(false);
+            SetBusy(false);
             RefreshState(false);
         }
     }
 
-    private bool ValidateSettings(string mode)
-    {
-        if (mode is "Finalize" or "Disarm") return true;
-        if (string.IsNullOrWhiteSpace(_outputPath.Text) || _outputPath.Text.StartsWith("\\\\", StringComparison.Ordinal))
-        {
-            MessageBox.Show(this, "The final report parent must be a local folder. Use Optional UNC copy for a network destination.", "Invalid output folder", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return false;
-        }
-        if (!string.IsNullOrWhiteSpace(_copyTo.Text) && !_copyTo.Text.StartsWith("\\\\", StringComparison.Ordinal))
-        {
-            MessageBox.Show(this, "The optional copy destination must be a UNC path such as \\\\server\\share\\WindowsUpdateAnalytics.", "Invalid UNC path", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return false;
-        }
-        if (!string.IsNullOrWhiteSpace(_mediaPath.Text) && !_acceptEula.Checked)
-        {
-            MessageBox.Show(this, "Select EULA acceptance before requesting a media compatibility scan.", "EULA acceptance required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return false;
-        }
-        return true;
-    }
-
-    private async Task<BackendExecutionResult> RunBackendAsync(string mode)
+    private async Task<BackendExecutionResult> RunBackendAsync(string action)
     {
         var systemRoot = Environment.GetEnvironmentVariable("SystemRoot") ?? @"C:\Windows";
         var powerShell = Path.Combine(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -429,235 +258,119 @@ internal sealed class MainForm : Form
         var script = Path.Combine(_runtimePath!, "Invoke-Win11UpgradeDiag.ps1");
         var publicDocuments = GetPublicDocuments();
         Directory.CreateDirectory(publicDocuments);
-        var bootstrapLog = Path.Combine(publicDocuments, "Win11UpgradeDiag-Launcher.log");
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = powerShell,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-            WorkingDirectory = _runtimePath!
-        };
-        foreach (var argument in BuildArguments(mode, script, bootstrapLog)) startInfo.ArgumentList.Add(argument);
-
-        var outputLines = new System.Collections.Concurrent.ConcurrentQueue<string>();
-        void RecordOutput(string line)
-        {
-            outputLines.Enqueue(line);
-            while (outputLines.Count > 200) outputLines.TryDequeue(out _);
-            AppendLog(line);
-        }
-
+        var bootstrapLog = Path.Combine(publicDocuments, "WUPA-Launcher.log");
+        var startInfo = new ProcessStartInfo { FileName = powerShell, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = _runtimePath! };
+        foreach (var value in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", action, "-NoOpen", "-BootstrapLogPath", bootstrapLog }) startInfo.ArgumentList.Add(value);
+        var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void Record(string line) { lines.Enqueue(line); while (lines.Count > 200) lines.TryDequeue(out _); AppendLog(line); }
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, args) => { if (args.Data is not null) RecordOutput(args.Data); };
-        process.ErrorDataReceived += (_, args) => { if (args.Data is not null) RecordOutput("ERROR: " + args.Data); };
+        process.OutputDataReceived += (_, args) => { if (args.Data is not null) Record(args.Data); };
+        process.ErrorDataReceived += (_, args) => { if (args.Data is not null) Record("ERROR: " + args.Data); };
         if (!process.Start()) throw new InvalidOperationException("Windows PowerShell did not start.");
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         await process.WaitForExitAsync();
         process.WaitForExit();
-        AppendLog($"Backend exited with code {process.ExitCode}.");
-        return new BackendExecutionResult(process.ExitCode, outputLines.ToArray());
+        Record($"Collector exited with code {process.ExitCode}.");
+        return new BackendExecutionResult(process.ExitCode, lines.ToArray());
     }
 
-    private IEnumerable<string> BuildArguments(string mode, string script, string bootstrapLog)
-    {
-        var values = new List<string> { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Mode", mode, "-NoOpen", "-BootstrapLogPath", bootstrapLog };
-        if (mode is "Preflight" or "Forensic")
-        {
-            values.AddRange(new[] { "-TargetVersion", _target.Text, "-OutputPath", Path.GetFullPath(_outputPath.Text), "-ArmDays", ((int)_armDays.Value).ToString() });
-            if (!string.IsNullOrWhiteSpace(_copyTo.Text)) values.AddRange(new[] { "-CopyTo", _copyTo.Text.Trim() });
-            if (!string.IsNullOrWhiteSpace(_mediaPath.Text))
-            {
-                values.AddRange(new[] { "-MediaPath", _mediaPath.Text.Trim(), "-AcceptWindowsEula" });
-            }
-            if (_largeDumps.Checked) values.Add("-IncludeLargeDumps");
-            if (_noInternet.Checked) values.Add("-NoInternet");
-            if (_noHooks.Checked) values.Add("-NoSetupHooks");
-        }
-        return values;
-    }
-
-    private void RefreshState(bool setStatus = true)
+    private void RefreshState(bool updateStatus = true)
     {
         var active = ActiveRunInfo.TryRead();
+        var legacyActive = ActiveRunInfo.LegacyCaseExists();
         if (active is not null)
         {
             _lastOutputPath = active.OutputPath;
-            var copyPending = active.Status.Equals("AwaitingInteractiveCopy", StringComparison.OrdinalIgnoreCase);
-            var recorderFailed = !string.IsNullOrWhiteSpace(active.RecorderStartStatus) && !active.RecorderStartStatus.Equals("Started", StringComparison.OrdinalIgnoreCase);
-            var runLockStatus = active.ProbeRunLock();
-            var collectorStatus = active.TryReadLatestCollectorStatus();
-            if (collectorStatus is not null && !string.Equals(_lastCollectorStatusLine, collectorStatus.RawLine, StringComparison.Ordinal))
+            var lockState = active.ProbeRunLock();
+            var collector = active.TryReadLatestCollectorStatus();
+            if (collector is not null && !string.Equals(_lastCollectorLine, collector.RawLine, StringComparison.Ordinal)) { _lastCollectorLine = collector.RawLine; AppendLog("[Collector.log] " + collector.RawLine); }
+            _primaryAction = "Finish";
+            _primary.Text = lockState == RunLockStatus.Held ? "Automatic report is running…" : "Finish and create report";
+            _primary.Enabled = !_busy && lockState == RunLockStatus.NotHeld;
+            _analyze.Visible = false;
+            _cancel.Visible = true;
+            _cancel.Enabled = !_busy && lockState == RunLockStatus.NotHeld;
+            _openFolder.Enabled = Directory.Exists(active.RunPath) || Directory.Exists(active.OutputPath);
+            if (updateStatus && !_busy)
             {
-                _lastCollectorStatusLine = collectorStatus.RawLine;
-                AppendLog("[Collector.log] " + collectorStatus.RawLine);
+                if (lockState == RunLockStatus.Held) ShowAutomaticFinalization(active, false);
+                else if (!active.RecorderStartStatus.Equals("Started", StringComparison.OrdinalIgnoreCase)) SetStatus("Tracking needs attention", $"Recorder startup status: {active.RecorderStartStatus}. {collector?.DisplayText}", true);
+                else SetStatus("Tracking the 25H2 update", collector?.DisplayText ?? "WUPA is sampling Windows Update progress every 60 seconds and survives reboots.", false);
             }
-            if (setStatus && !_busy)
-            {
-                if (runLockStatus == RunLockStatus.Held) ShowAutomaticFinalizationStatus(active, false);
-                else if (copyPending) SetStatus("Final report ready; network copy is pending", $"Run {active.RunId} retained its state so an interactive technician can complete the requested UNC copy.", true);
-                else if (runLockStatus == RunLockStatus.Unknown) SetStatus("Run activity could not be verified", BuildCollectorDetail(collectorStatus, "Windows could not verify whether another diagnostic pass owns the run lock."), true);
-                else if (recorderFailed) SetStatus("Monitoring needs attention", $"Run {active.RunId} recorder startup status: {active.RecorderStartStatus}.", true);
-                else SetStatus("Monitoring is armed", BuildCollectorDetail(collectorStatus, $"Run {active.RunId} • target {active.TargetVersion} • expires {active.ExpiresUtcLocal}"), false);
-            }
-            _start.Enabled = false;
-            _forensic.Enabled = false;
-            _finalize.Enabled = !_busy && runLockStatus == RunLockStatus.NotHeld;
-            _finalize.Text = runLockStatus == RunLockStatus.Held
-                ? "Automatic finalization running"
-                : copyPending
-                    ? "Complete pending network copy"
-                    : "Finalize and build report";
-            _disarm.Enabled = !_busy && runLockStatus == RunLockStatus.NotHeld;
-            _openEvidence.Enabled = Directory.Exists(active.RunPath);
-            _openReport.Enabled = File.Exists(Path.Combine(active.OutputPath ?? string.Empty, "Report.html")) || FindLatestReport() is not null;
+            _stage.Text = $"Run {active.RunId}  •  Target 25H2  •  Expires {active.ExpiresUtcLocal}";
         }
         else
         {
-            _lastCollectorStatusLine = null;
-            _finalize.Text = "Finalize and build report";
-            if (setStatus && !_busy) SetStatus("No monitored upgrade is active", "Choose Start monitoring before Windows Update offers or installs 25H2, or create a one-time forensic report.", false);
-            _start.Enabled = !_busy;
-            _forensic.Enabled = !_busy;
-            _finalize.Enabled = false;
-            _disarm.Enabled = false;
-            _openEvidence.Enabled = false;
-            _openReport.Enabled = FindLatestReport() is not null;
+            _lastCollectorLine = null;
+            _cancel.Visible = false;
+            _analyze.Visible = !legacyActive;
+            _openFolder.Enabled = FindLatestReport() is not null;
+            if (legacyActive)
+            {
+                _primary.Enabled = false;
+                _analyze.Visible = false;
+                if (updateStatus && !_busy) SetStatus("A version 2 case is still active", "Finish or cancel the older case with Windows Update Analytics 2.2.1 before starting WUPA.", true);
+            }
+            else if (CurrentBuild() >= TargetBuild)
+            {
+                _primaryAction = "Analyze";
+                _primary.Text = "Analyze the completed 25H2 update";
+                _primary.Enabled = !_busy;
+                _analyze.Visible = false;
+                if (updateStatus && !_busy) SetStatus("Windows 11 25H2 is installed", "Create a focused after-the-fact report from the update evidence still retained on this computer.", false);
+            }
+            else
+            {
+                _primaryAction = "Start";
+                _primary.Text = "Start tracking the 25H2 update";
+                _primary.Enabled = !_busy;
+                if (updateStatus && !_busy) SetStatus("Ready to start a tracking case", "Start WUPA before your existing deployment process offers or installs Windows 11 25H2.", false);
+            }
+            _stage.Text = "Target: Windows 11 25H2  •  Results: Public Documents";
         }
+        _openReport.Enabled = !_busy && FindLatestReport() is not null;
     }
 
-    private void SetBusyState(bool busy)
+    private void ShowAutomaticFinalization(ActiveRunInfo? active, bool dialog)
     {
-        UseWaitCursor = busy;
-        _start.Enabled = !busy;
-        _finalize.Enabled = !busy;
-        _forensic.Enabled = !busy;
-        _disarm.Enabled = !busy;
-        _openReport.Enabled = !busy;
-        _openEvidence.Enabled = !busy;
-        foreach (var control in new Control[] { _outputPath, _copyTo, _mediaPath, _target, _armDays, _acceptEula, _largeDumps, _noInternet, _noHooks }) control.Enabled = !busy;
+        var detail = active?.TryReadLatestCollectorStatus()?.DisplayText ?? "The automatic post-reboot task is collecting final evidence. This window refreshes every five seconds.";
+        SetStatus("Automatic report is already running", detail, false);
+        _primary.Enabled = false;
+        _primary.Text = "Automatic report is running…";
+        _cancel.Enabled = false;
+        if (dialog) MessageBox.Show(this, detail, "WUPA is already working", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
-    private void SetStatus(string title, string detail, bool warning)
-    {
-        if (InvokeRequired) { BeginInvoke(new Action(() => SetStatus(title, detail, warning))); return; }
-        _status.Text = title;
-        _status.ForeColor = warning ? Color.FromArgb(170, 65, 45) : Color.FromArgb(18, 43, 70);
-        _statusDetail.Text = detail;
-        _statusToolTip.SetToolTip(_statusDetail, detail);
-    }
-
-    private void ShowAutomaticFinalizationStatus(ActiveRunInfo? active, bool showDialog)
-    {
-        var collectorStatus = active?.TryReadLatestCollectorStatus();
-        var detail = active is null
-            ? "Another diagnostic pass owns the run. Wait for it to finish; this window refreshes every five seconds."
-            : BuildCollectorDetail(collectorStatus, $"Run {active.RunId} is being handled by the automatic SYSTEM task. This window refreshes every five seconds.");
-        SetStatus("Automatic post-reboot finalization is already running", detail, false);
-        _finalize.Enabled = false;
-        _finalize.Text = "Automatic finalization running";
-        _disarm.Enabled = false;
-        if (showDialog)
-        {
-            MessageBox.Show(this,
-                $"The automatic post-reboot diagnostic pass is already handling this run. Wait for it to finish; the GUI will refresh every five seconds.\n\n{detail}\n\nDo not delete State\\run.lock or start another Finalize pass.",
-                "Automatic finalization in progress", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-    }
-
-    private static string BuildCollectorDetail(CollectorLogStatus? collectorStatus, string fallback) => collectorStatus?.DisplayText ?? fallback;
-
-    private void AppendLog(string text)
-    {
-        if (InvokeRequired) { BeginInvoke(new Action(() => AppendLog(text))); return; }
-        _log.AppendText(text + Environment.NewLine);
-        _log.SelectionStart = _log.TextLength;
-        _log.ScrollToCaret();
-    }
-
-    private void OpenLatestReport()
-    {
-        var report = FindLatestReport();
-        if (report is null) MessageBox.Show(this, "No finalized report was found. An armed Preflight does not create one.", "No report yet", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        else OpenPath(report);
-    }
-
-    private void OpenCaseFolder()
-    {
-        var active = ActiveRunInfo.TryRead();
-        var path = active?.RunPath;
-        if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path)) OpenPath(path);
-    }
+    private void SetBusy(bool busy) { UseWaitCursor = busy; foreach (var control in new Control[] { _primary, _analyze, _openReport, _openFolder, _cancel }) control.Enabled = !busy; }
+    private void SetStatus(string title, string detail, bool warning) { if (InvokeRequired) { BeginInvoke(new Action(() => SetStatus(title, detail, warning))); return; } _status.Text = title; _status.ForeColor = warning ? Color.FromArgb(170, 62, 42) : Color.FromArgb(6, 38, 70); _statusDetail.Text = detail; }
+    private void ToggleDetails() { _detailsVisible = !_detailsVisible; _detailsPanel.Visible = _detailsVisible; _details.Text = _detailsVisible ? "Hide technical details" : "Show technical details"; Height = _detailsVisible ? Math.Max(760, Height) : Math.Min(640, Height); }
+    private void AppendLog(string value) { if (InvokeRequired) { BeginInvoke(new Action(() => AppendLog(value))); return; } _log.AppendText(value + Environment.NewLine); _log.SelectionStart = _log.TextLength; _log.ScrollToCaret(); }
+    private void OpenLatestReport() { var report = FindLatestReport(); if (report is null) MessageBox.Show(this, "No finalized WUPA report was found.", "No report yet", MessageBoxButtons.OK, MessageBoxIcon.Information); else OpenPath(report); }
+    private void OpenBestFolder() { var active = ActiveRunInfo.TryRead(); if (active is not null && Directory.Exists(active.RunPath)) { OpenPath(active.RunPath); return; } var report = FindLatestReport(); if (report is not null) OpenPath(Path.GetDirectoryName(report)!); }
 
     private string? FindLatestReport(DateTime? notBeforeUtc = null)
     {
-        if (!string.IsNullOrWhiteSpace(_lastOutputPath))
-        {
-            var known = Path.Combine(_lastOutputPath, "Report.html");
-            if (File.Exists(known) && (!notBeforeUtc.HasValue || File.GetLastWriteTimeUtc(known) >= notBeforeUtc.Value)) return known;
-        }
-        var parent = _outputPath.Text;
+        if (!string.IsNullOrWhiteSpace(_lastOutputPath)) { var known = Path.Combine(_lastOutputPath, "Report.html"); if (File.Exists(known) && (!notBeforeUtc.HasValue || File.GetLastWriteTimeUtc(known) >= notBeforeUtc.Value)) return known; }
+        var parent = GetPublicDocuments();
         if (!Directory.Exists(parent)) return null;
-        try
-        {
-            return Directory.EnumerateFiles(parent, "Report.html", SearchOption.AllDirectories)
-                .Select(path => new FileInfo(path))
-                .Where(file => file.Directory?.Name.StartsWith("Win11UpgradeDiag-", StringComparison.OrdinalIgnoreCase) == true)
-                .Where(file => !notBeforeUtc.HasValue || file.LastWriteTimeUtc >= notBeforeUtc.Value)
-                .OrderByDescending(file => file.LastWriteTimeUtc)
-                .FirstOrDefault()?.FullName;
-        }
+        try { return Directory.EnumerateFiles(parent, "Report.html", SearchOption.AllDirectories).Select(path => new FileInfo(path)).Where(file => file.Directory?.Name.StartsWith("WUPA-", StringComparison.OrdinalIgnoreCase) == true).Where(file => !notBeforeUtc.HasValue || file.LastWriteTimeUtc >= notBeforeUtc.Value).OrderByDescending(file => file.LastWriteTimeUtc).FirstOrDefault()?.FullName; }
         catch { return null; }
     }
 
+    private static int CurrentBuild() { try { using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"); return int.TryParse(key?.GetValue("CurrentBuild")?.ToString(), out var build) ? build : Environment.OSVersion.Version.Build; } catch { return Environment.OSVersion.Version.Build; } }
+    private static string GetPublicDocuments() { var publicRoot = Environment.GetEnvironmentVariable("PUBLIC"); return !string.IsNullOrWhiteSpace(publicRoot) ? Path.Combine(publicRoot, "Documents") : Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments); }
+    private static string ActionTitle(string action) => action switch { "Start" => "Starting update tracking", "Finish" => "Building the final report", "Analyze" => "Analyzing retained update evidence", "Cancel" => "Canceling update tracking", _ => "WUPA is working" };
     private static void OpenPath(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-
-    private static string ModeTitle(string mode) => mode switch
-    {
-        "Preflight" => "Preflight baseline",
-        "Finalize" => "Final collection",
-        "Resume" => "Deferred network copy",
-        "Forensic" => "Forensic collection",
-        "Disarm" => "Monitoring cleanup",
-        _ => mode
-    };
-
-    private static string GetPublicDocuments()
-    {
-        var publicRoot = Environment.GetEnvironmentVariable("PUBLIC");
-        if (!string.IsNullOrWhiteSpace(publicRoot)) return Path.Combine(publicRoot, "Documents");
-        return Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments);
-    }
-
-    private void OnClosing(object? sender, FormClosingEventArgs e)
-    {
-        if (!_busy) return;
-        e.Cancel = true;
-        MessageBox.Show(this, "A collection is still running. Wait for it to finish before closing the application so its final status can be verified.", "Collection in progress", MessageBoxButtons.OK, MessageBoxIcon.Information);
-    }
+    private void OnClosing(object? sender, FormClosingEventArgs e) { if (!_busy) return; e.Cancel = true; MessageBox.Show(this, "WUPA is still collecting. Wait for this pass to finish before closing the app.", "Collection in progress", MessageBoxButtons.OK, MessageBoxIcon.Information); }
 }
 
 internal static class StartupFailureLog
 {
     public static string? TryWrite(Exception exception)
     {
-        try
-        {
-            var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-            var directory = Path.Combine(programData, "WindowsUpdateAnalytics");
-            Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, "Gui-Startup-Failure.log");
-            File.AppendAllText(path, $"[{DateTime.UtcNow:O}] Windows Update Analytics GUI startup failure{Environment.NewLine}{exception}{Environment.NewLine}{Environment.NewLine}", Encoding.UTF8);
-            return path;
-        }
-        catch
-        {
-            return null;
-        }
+        try { var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "WUPA"); Directory.CreateDirectory(directory); var path = Path.Combine(directory, "Gui-Startup-Failure.log"); File.AppendAllText(path, $"[{DateTime.UtcNow:O}] WUPA GUI startup failure{Environment.NewLine}{exception}{Environment.NewLine}{Environment.NewLine}", Encoding.UTF8); return path; }
+        catch { return null; }
     }
 }
 
@@ -671,216 +384,78 @@ internal sealed class ActiveRunInfo
     public string RecorderStartStatus { get; private init; } = string.Empty;
     public DateTime? ExpiresUtc { get; private init; }
     public string ExpiresUtcLocal => ExpiresUtc?.ToLocalTime().ToString("g") ?? "unknown";
-
-    public RunLockStatus ProbeRunLock()
-    {
-        if (string.IsNullOrWhiteSpace(RunPath)) return RunLockStatus.Unknown;
-        var lockPath = Path.Combine(RunPath, "State", "run.lock");
-        if (!File.Exists(lockPath)) return RunLockStatus.NotHeld;
-        try
-        {
-            using var stream = new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-            return RunLockStatus.NotHeld;
-        }
-        catch (FileNotFoundException) { return RunLockStatus.NotHeld; }
-        catch (DirectoryNotFoundException) { return RunLockStatus.NotHeld; }
-        catch (IOException) { return RunLockStatus.Held; }
-        catch (UnauthorizedAccessException) { return RunLockStatus.Unknown; }
-        catch { return RunLockStatus.Unknown; }
-    }
-
+    public RunLockStatus ProbeRunLock() { if (string.IsNullOrWhiteSpace(RunPath)) return RunLockStatus.Unknown; var path = Path.Combine(RunPath, "State", "run.lock"); if (!File.Exists(path)) return RunLockStatus.NotHeld; try { using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None); return RunLockStatus.NotHeld; } catch (FileNotFoundException) { return RunLockStatus.NotHeld; } catch (DirectoryNotFoundException) { return RunLockStatus.NotHeld; } catch (IOException) { return RunLockStatus.Held; } catch { return RunLockStatus.Unknown; } }
     public CollectorLogStatus? TryReadLatestCollectorStatus()
     {
-        if (string.IsNullOrWhiteSpace(RunPath)) return null;
-        var logPath = Path.Combine(RunPath, "Collector.log");
-        if (!File.Exists(logPath)) return null;
-        try
-        {
-            const int maximumTailBytes = 128 * 1024;
-            using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            var offset = Math.Max(0, stream.Length - maximumTailBytes);
-            stream.Seek(offset, SeekOrigin.Begin);
-            using var reader = new StreamReader(stream, Encoding.UTF8, true);
-            var tail = reader.ReadToEnd();
-            var lines = tail.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries);
-            var lastLine = lines.LastOrDefault(CollectorLogStatus.IsStructured)
-                ?? lines.LastOrDefault(line => !string.IsNullOrWhiteSpace(line));
-            lastLine = lastLine?.Trim();
-            return string.IsNullOrWhiteSpace(lastLine) ? null : CollectorLogStatus.Parse(lastLine);
-        }
+        var path = Path.Combine(RunPath, "Collector.log");
+        if (!File.Exists(path)) return null;
+        try { const int tailBytes = 128 * 1024; using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); stream.Seek(Math.Max(0, stream.Length - tailBytes), SeekOrigin.Begin); using var reader = new StreamReader(stream, Encoding.UTF8, true); var lines = reader.ReadToEnd().Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries); var line = lines.LastOrDefault(CollectorLogStatus.IsStructured) ?? lines.LastOrDefault(); return string.IsNullOrWhiteSpace(line) ? null : CollectorLogStatus.Parse(line.Trim()); }
         catch { return null; }
     }
-
     public static ActiveRunInfo? TryRead()
     {
-        var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        var path = Path.Combine(programData, "Win11UpgradeDiag", "ActiveRun.json");
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "WUPA", "ActiveRun.json");
         if (!File.Exists(path)) return null;
-        try
-        {
-            using var document = JsonDocument.Parse(File.ReadAllText(path));
-            var root = document.RootElement;
-            var recorderStartStatus = string.Empty;
-            if (root.TryGetProperty("RecorderStart", out var recorderStart) && recorderStart.ValueKind == JsonValueKind.Object && recorderStart.TryGetProperty("Status", out var recorderStatus))
-                recorderStartStatus = recorderStatus.ToString();
-            return new ActiveRunInfo
-            {
-                RunId = ReadString(root, "RunId"),
-                Status = ReadString(root, "Status"),
-                TargetVersion = ReadString(root, "TargetVersion"),
-                RunPath = ReadString(root, "RunPath"),
-                OutputPath = ReadString(root, "OutputPath"),
-                RecorderStartStatus = recorderStartStatus,
-                ExpiresUtc = DateTime.TryParse(ReadString(root, "ExpiresUtc"), out var expires) ? expires.ToUniversalTime() : null
-            };
-        }
+        try { using var document = JsonDocument.Parse(File.ReadAllText(path)); var root = document.RootElement; var recorderStatus = string.Empty; if (root.TryGetProperty("RecorderStart", out var recorder) && recorder.ValueKind == JsonValueKind.Object && recorder.TryGetProperty("Status", out var status)) recorderStatus = status.ToString(); return new ActiveRunInfo { RunId = ReadString(root, "RunId"), Status = ReadString(root, "Status"), TargetVersion = ReadString(root, "TargetVersion"), RunPath = ReadString(root, "RunPath"), OutputPath = ReadString(root, "OutputPath"), RecorderStartStatus = recorderStatus, ExpiresUtc = DateTime.TryParse(ReadString(root, "ExpiresUtc"), out var expires) ? expires.ToUniversalTime() : null }; }
         catch { return null; }
     }
-
+    public static bool LegacyCaseExists() => File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Win11UpgradeDiag", "ActiveRun.json"));
     private static string ReadString(JsonElement root, string name) => root.TryGetProperty(name, out var value) ? value.ToString() : string.Empty;
 }
 
-internal enum RunLockStatus
-{
-    NotHeld,
-    Held,
-    Unknown
-}
+internal enum RunLockStatus { NotHeld, Held, Unknown }
 
 internal sealed class CollectorLogStatus
 {
-    private static readonly Regex LogPattern = new(
-        @"^(?<timestamp>\S+)\s+\[(?<level>DEBUG|INFO|WARN|ERROR)\]\s+(?<message>.*)$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
+    private static readonly Regex Pattern = new(@"^(?<timestamp>\S+)\s+\[(?<level>DEBUG|INFO|WARN|ERROR)\]\s+(?<message>.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     public string RawLine { get; }
     public string DisplayText { get; }
-
-    private CollectorLogStatus(string rawLine, string displayText)
-    {
-        RawLine = rawLine;
-        DisplayText = displayText;
-    }
-
-    public static bool IsStructured(string line) => LogPattern.IsMatch(line.Trim());
-
-    public static CollectorLogStatus Parse(string rawLine)
-    {
-        var match = LogPattern.Match(rawLine);
-        if (!match.Success) return new CollectorLogStatus(rawLine, "Last Collector.log status: " + rawLine);
-
-        var level = match.Groups["level"].Value.ToUpperInvariant();
-        var message = match.Groups["message"].Value;
-        var timestampText = match.Groups["timestamp"].Value;
-        var timestamp = DateTimeOffset.TryParse(timestampText, out var parsed)
-            ? parsed.ToLocalTime().ToString("g")
-            : timestampText;
-        return new CollectorLogStatus(rawLine, $"Last Collector.log status ({timestamp}, {level}): {message}");
-    }
+    private CollectorLogStatus(string raw, string display) { RawLine = raw; DisplayText = display; }
+    public static bool IsStructured(string line) => Pattern.IsMatch(line.Trim());
+    public static CollectorLogStatus Parse(string line) { var match = Pattern.Match(line); if (!match.Success) return new CollectorLogStatus(line, "Last collector status: " + line); var timestamp = DateTimeOffset.TryParse(match.Groups["timestamp"].Value, out var parsed) ? parsed.ToLocalTime().ToString("g") : match.Groups["timestamp"].Value; return new CollectorLogStatus(line, $"Last collector status ({timestamp}, {match.Groups["level"].Value.ToUpperInvariant()}): {match.Groups["message"].Value}"); }
 }
 
 internal sealed class BackendExecutionResult
 {
     public int ExitCode { get; }
-    public IReadOnlyList<string> OutputLines { get; }
-    public bool RunLockCollision => OutputLines.Any(line => line.Contains("already handling this run", StringComparison.OrdinalIgnoreCase));
-    public string? LastMessage => OutputLines.LastOrDefault(line => !string.IsNullOrWhiteSpace(line));
-
-    public BackendExecutionResult(int exitCode, IReadOnlyList<string> outputLines)
-    {
-        ExitCode = exitCode;
-        OutputLines = outputLines;
-    }
+    public IReadOnlyList<string> Lines { get; }
+    public bool RunLockCollision => Lines.Any(line => line.Contains("already handling this run", StringComparison.OrdinalIgnoreCase));
+    public string? LastMessage => Lines.LastOrDefault(line => !string.IsNullOrWhiteSpace(line));
+    public BackendExecutionResult(int exitCode, IReadOnlyList<string> lines) { ExitCode = exitCode; Lines = lines; }
 }
 
 internal static class PayloadManager
 {
     private const string ResourcePrefix = "Payload/";
-
     public static string EnsureExtracted(string version)
     {
-        var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        var parent = Path.Combine(programData, "WindowsUpdateAnalytics", "Runtime");
+        var parent = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "WUPA", "Runtime");
         var destination = Path.Combine(parent, version);
         Directory.CreateDirectory(parent);
-        if (Directory.Exists(destination))
-        {
-            try
-            {
-                VerifyEmbeddedManifestMatches(destination);
-                VerifyManifest(destination);
-                return destination;
-            }
-            catch
-            {
-                var quarantine = destination + ".invalid-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
-                Directory.Move(destination, quarantine);
-            }
-        }
-
+        if (Directory.Exists(destination)) { try { VerifyEmbeddedManifestMatches(destination); VerifyManifest(destination); return destination; } catch { Directory.Move(destination, destination + ".invalid-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ")); } }
         var staging = Path.Combine(parent, ".extract-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(staging);
         try
         {
             var assembly = Assembly.GetExecutingAssembly();
             var resources = assembly.GetManifestResourceNames().Where(name => name.StartsWith(ResourcePrefix, StringComparison.Ordinal)).ToArray();
-            if (resources.Length == 0) throw new InvalidOperationException("The executable contains no diagnostic payload.");
-            var stagingPrefix = Path.GetFullPath(staging) + Path.DirectorySeparatorChar;
-            foreach (var resource in resources)
-            {
-                var relative = resource[ResourcePrefix.Length..].Replace('/', Path.DirectorySeparatorChar);
-                var target = Path.GetFullPath(Path.Combine(staging, relative));
-                if (!target.StartsWith(stagingPrefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("An embedded payload path left the extraction root.");
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                using var input = assembly.GetManifestResourceStream(resource) ?? throw new InvalidOperationException($"Embedded resource was unreadable: {resource}");
-                using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                input.CopyTo(output);
-            }
+            if (resources.Length == 0) throw new InvalidOperationException("The executable contains no WUPA collector payload.");
+            var prefix = Path.GetFullPath(staging) + Path.DirectorySeparatorChar;
+            foreach (var resource in resources) { var relative = resource[ResourcePrefix.Length..].Replace('/', Path.DirectorySeparatorChar); var target = Path.GetFullPath(Path.Combine(staging, relative)); if (!target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("An embedded payload path left the extraction root."); Directory.CreateDirectory(Path.GetDirectoryName(target)!); using var input = assembly.GetManifestResourceStream(resource) ?? throw new InvalidOperationException($"Embedded resource was unreadable: {resource}"); using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None); input.CopyTo(output); }
             VerifyManifest(staging);
             Directory.Move(staging, destination);
             return destination;
         }
-        catch
-        {
-            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { }
-            throw;
-        }
+        catch { try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { } throw; }
     }
-
-    private static void VerifyEmbeddedManifestMatches(string root)
-    {
-        var installed = Path.Combine(root, "BundleManifest.sha256");
-        var assembly = Assembly.GetExecutingAssembly();
-        using var expectedStream = assembly.GetManifestResourceStream(ResourcePrefix + "BundleManifest.sha256")
-            ?? throw new InvalidOperationException("The executable's embedded bundle manifest is missing.");
-        using var expectedHash = SHA256.Create();
-        var expected = expectedHash.ComputeHash(expectedStream);
-        using var actualStream = File.OpenRead(installed);
-        using var actualHash = SHA256.Create();
-        var actual = actualHash.ComputeHash(actualStream);
-        if (!CryptographicOperations.FixedTimeEquals(expected, actual))
-            throw new InvalidOperationException("The installed runtime belongs to a different build of this version.");
-    }
-
+    private static void VerifyEmbeddedManifestMatches(string root) { using var expectedStream = Assembly.GetExecutingAssembly().GetManifestResourceStream(ResourcePrefix + "BundleManifest.sha256") ?? throw new InvalidOperationException("The embedded bundle manifest is missing."); var expected = SHA256.HashData(expectedStream); using var actualStream = File.OpenRead(Path.Combine(root, "BundleManifest.sha256")); var actual = SHA256.HashData(actualStream); if (!CryptographicOperations.FixedTimeEquals(expected, actual)) throw new InvalidOperationException("The installed runtime belongs to a different WUPA build."); }
     private static void VerifyManifest(string root)
     {
         var manifest = Path.Combine(root, "BundleManifest.sha256");
         if (!File.Exists(manifest)) throw new InvalidOperationException("The embedded bundle manifest is missing.");
-        var rootPrefix = Path.GetFullPath(root) + Path.DirectorySeparatorChar;
+        var prefix = Path.GetFullPath(root) + Path.DirectorySeparatorChar;
         var verified = 0;
-        foreach (var line in File.ReadLines(manifest))
-        {
-            if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith('#')) continue;
-            var match = Regex.Match(line, "^([A-Fa-f0-9]{64})\\s+\\*?(.+)$");
-            if (!match.Success) throw new InvalidOperationException("The embedded bundle manifest is malformed.");
-            var relative = match.Groups[2].Value.Trim().Replace('/', Path.DirectorySeparatorChar);
-            var candidate = Path.GetFullPath(Path.Combine(root, relative));
-            if (!candidate.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(candidate)) throw new InvalidOperationException($"Embedded payload file is missing or unsafe: {relative}");
-            using var stream = File.OpenRead(candidate);
-            var actual = Convert.ToHexString(SHA256.HashData(stream));
-            if (!actual.Equals(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException($"Embedded payload integrity check failed: {relative}");
-            verified++;
-        }
+        foreach (var line in File.ReadLines(manifest)) { if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith('#')) continue; var match = Regex.Match(line, "^([A-Fa-f0-9]{64})\\s+\\*?(.+)$"); if (!match.Success) throw new InvalidOperationException("The embedded bundle manifest is malformed."); var relative = match.Groups[2].Value.Trim().Replace('/', Path.DirectorySeparatorChar); var candidate = Path.GetFullPath(Path.Combine(root, relative)); if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(candidate)) throw new InvalidOperationException($"Embedded payload file is missing or unsafe: {relative}"); using var stream = File.OpenRead(candidate); if (!Convert.ToHexString(SHA256.HashData(stream)).Equals(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException($"Embedded payload integrity check failed: {relative}"); verified++; }
         if (verified == 0) throw new InvalidOperationException("The embedded bundle manifest contains no file records.");
     }
 }

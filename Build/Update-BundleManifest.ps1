@@ -8,16 +8,12 @@ Set-StrictMode -Version 2.0
 $toolRoot = Split-Path -Parent $PSScriptRoot
 $manifestPath = Join-Path $toolRoot 'BundleManifest.sha256'
 $rootFiles = @(
-    'CHANGELOG.md',
     'Invoke-Win11UpgradeDiag.ps1',
     'NOTICE.md',
-    'Prepare-Win11UpgradeDiag.cmd',
-    'README.md',
-    'Start-Win11UpgradeDiag.cmd',
     'VERSION',
     'Watch-Win11Upgrade.ps1'
 )
-$folderFiles = @('Assets', 'Data', 'Modules', 'Tests', 'docs')
+$folderFiles = @('Assets', 'Data', 'Modules')
 $relativeFiles = New-Object Collections.ArrayList
 foreach ($relative in $rootFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $toolRoot $relative) -PathType Leaf)) { throw "Required payload file is missing: $relative" }

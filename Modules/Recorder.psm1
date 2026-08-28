@@ -220,8 +220,8 @@ function Get-WudSetupPhaseObservation {
 }
 
 function Get-WudRecorderSignature {
-    param([Parameter(Mandatory = $true)]$Sample, [int]$ProgressBucketSize = 10)
-    if ($ProgressBucketSize -lt 1) { $ProgressBucketSize = 10 }
+    param([Parameter(Mandatory = $true)]$Sample, [int]$ProgressBucketSize = 100)
+    if ($ProgressBucketSize -lt 1) { $ProgressBucketSize = 100 }
     $setup = Get-WudRecorderProperty $Sample 'Setup'
     $progress = Get-WudRecorderProperty $setup 'SetupProgress'
     $bucket = if ($null -ne $progress) { [Math]::Floor([double]$progress / $ProgressBucketSize) * $ProgressBucketSize } else { $null }
@@ -510,17 +510,13 @@ function Invoke-WudRecorderExternal {
 }
 
 function Copy-WudCheckpointNativeEvidence {
-    param([string]$CheckpointPath, [long]$MaximumFileBytes = 67108864, [long]$MaximumCheckpointBytes = 268435456)
+    param([string]$CheckpointPath, [long]$MaximumFileBytes = 16777216, [long]$MaximumCheckpointBytes = 67108864)
     $records = New-Object Collections.ArrayList
     $copiedBytes = 0L
     $sources = @(
         @{ Name = 'WindowsBT-Panther'; Path = (Join-Path $env:SystemDrive '$WINDOWS.~BT\Sources\Panther') },
         @{ Name = 'WindowsBT-Rollback'; Path = (Join-Path $env:SystemDrive '$WINDOWS.~BT\Sources\Rollback') },
-        @{ Name = 'Windows-Panther'; Path = (Join-Path $env:SystemRoot 'Panther') },
-        @{ Name = 'Windows-MoSetup'; Path = (Join-Path $env:SystemRoot 'Logs\MoSetup') },
-        @{ Name = 'WindowsUpdate-ETL'; Path = (Join-Path $env:SystemRoot 'Logs\WindowsUpdate') },
-        @{ Name = 'USOShared-Logs'; Path = (Join-Path $env:ProgramData 'USOShared\Logs') },
-        @{ Name = 'DeliveryOptimization-Logs'; Path = (Join-Path $env:ProgramData 'Microsoft\Windows\DeliveryOptimization\Logs') }
+        @{ Name = 'Windows-MoSetup'; Path = (Join-Path $env:SystemRoot 'Logs\MoSetup') }
     )
     foreach ($source in $sources) {
         if (-not (Test-Path -LiteralPath $source.Path)) {
@@ -528,7 +524,7 @@ function Copy-WudCheckpointNativeEvidence {
             continue
         }
         $files = if ((Get-Item -LiteralPath $source.Path -Force).PSIsContainer) {
-            @(Get-ChildItem -LiteralPath $source.Path -File -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -match '^\.(?:log|xml|etl|evtx|json|dmp)$' } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 30)
+            @(Get-ChildItem -LiteralPath $source.Path -File -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -match '^\.(?:log|xml|json|dmp)$' } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 12)
         }
         else { @((Get-Item -LiteralPath $source.Path -Force)) }
         foreach ($file in $files) {
@@ -559,9 +555,9 @@ function Write-WudRecorderCheckpoint {
         [Parameter(Mandatory = $true)][string]$RunPath,
         [Parameter(Mandatory = $true)]$Sample,
         [Parameter(Mandatory = $true)][string]$Reason,
-        [int]$MaximumCheckpoints = 64,
-        [long]$MaximumFileBytes = 67108864,
-        [long]$MaximumCheckpointBytes = 268435456
+        [int]$MaximumCheckpoints = 8,
+        [long]$MaximumFileBytes = 16777216,
+        [long]$MaximumCheckpointBytes = 67108864
     )
     $root = Get-WudRecorderRoot -RunPath $RunPath
     $checkpointRoot = New-WudDirectory -Path (Join-Path $root 'Checkpoints')
@@ -575,18 +571,9 @@ function Write-WudRecorderCheckpoint {
     $path = New-WudDirectory -Path (Join-Path $checkpointRoot ("{0}-{1}" -f $timestamp, $safeState))
     Write-WudJsonAtomic -Path (Join-Path $path 'sample.json') -InputObject $Sample -Depth 30
     $native = @(Copy-WudCheckpointNativeEvidence -CheckpointPath $path -MaximumFileBytes $MaximumFileBytes -MaximumCheckpointBytes $MaximumCheckpointBytes)
-    $events = New-Object Collections.ArrayList
-    if (Test-WudIsWindows) {
-        $eventPath = New-WudDirectory -Path (Join-Path $path 'Native\EventLogs')
-        foreach ($channel in @('System', 'Setup', 'Microsoft-Windows-WindowsUpdateClient/Operational', 'Microsoft-Windows-DeliveryOptimization/Operational')) {
-            $name = ($channel -replace '[^A-Za-z0-9._-]', '_') + '.evtx'
-            $destination = Join-Path $eventPath $name
-            $null = $events.Add((Invoke-WudRecorderExternal -FilePath 'wevtutil.exe' -Arguments @('epl', $channel, $destination, '/ow:true') -ArtifactPath $destination))
-        }
-    }
     $manifest = [pscustomobject][ordered]@{
         SchemaVersion = 1; Reason = $Reason; RecorderState = $state; TimestampUtc = Get-WudRecorderProperty $Sample 'TimestampUtc'
-        NativeFiles = @($native); EventExports = @($events); CompletedUtc = [DateTime]::UtcNow.ToString('o')
+        NativeFiles = @($native); EventExports = @(); CompletedUtc = [DateTime]::UtcNow.ToString('o')
     }
     Write-WudJsonAtomic -Path (Join-Path $path 'checkpoint-manifest.json') -InputObject $manifest -Depth 30
     return [pscustomobject][ordered]@{ Status = 'Created'; Path = $path; Reason = $Reason; TimestampUtc = Get-WudRecorderProperty $Sample 'TimestampUtc' }
@@ -598,10 +585,10 @@ function Invoke-WudRecorderSample {
         [string]$TargetVersion = '25H2',
         [int]$TargetBuild = 26200,
         [string]$Reason = 'PeriodicSample',
-        [int]$ProgressBucketSize = 10,
-        [int]$MaximumCheckpoints = 64,
-        [long]$MaximumCheckpointFileBytes = 67108864,
-        [long]$MaximumCheckpointBytes = 268435456,
+        [int]$ProgressBucketSize = 100,
+        [int]$MaximumCheckpoints = 8,
+        [long]$MaximumCheckpointFileBytes = 16777216,
+        [long]$MaximumCheckpointBytes = 67108864,
         [switch]$ForceCheckpoint
     )
     $root = Get-WudRecorderRoot -RunPath $RunPath
@@ -641,10 +628,10 @@ function Start-WudProgressRecorder {
         [string]$TargetVersion = '25H2',
         [int]$TargetBuild = 26200,
         [ValidateRange(30, 3600)][int]$IntervalSeconds = 60,
-        [int]$ProgressBucketSize = 10,
-        [int]$MaximumCheckpoints = 64,
-        [long]$MaximumCheckpointFileBytes = 67108864,
-        [long]$MaximumCheckpointBytes = 268435456,
+        [int]$ProgressBucketSize = 100,
+        [int]$MaximumCheckpoints = 8,
+        [long]$MaximumCheckpointFileBytes = 16777216,
+        [long]$MaximumCheckpointBytes = 67108864,
         [switch]$Once
     )
     $statePath = Join-Path $RunPath 'State\run-state.json'

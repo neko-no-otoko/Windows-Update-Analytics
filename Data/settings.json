@@ -1,16 +1,12 @@
 {
   "schemaVersion": 2,
-  "configurationVersion": "2.0.0",
-  "eventLookbackDays": 30,
+  "configurationVersion": "3.0.0",
+  "eventLookbackDays": 7,
   "maximumTextParseBytes": 536870912,
   "maximumEvidenceMatchesPerRule": 25,
   "timeoutsSeconds": {
     "defaultCommand": 600,
-    "dismScanHealth": 3600,
-    "sfcVerifyOnly": 3600,
-    "appraiser": 1800,
     "setupDiag": 2700,
-    "compatibilityScan": 7200,
     "windowsUpdateLog": 1800,
     "copyToShare": 1800
   },
@@ -25,9 +21,9 @@
   "maximumDefaultDumpBytes": 2147483648,
   "recorder": {
     "sampleIntervalSeconds": 60,
-    "progressBucketPercent": 10,
-    "maximumCheckpoints": 64,
-    "maximumCheckpointFileBytes": 67108864,
-    "maximumCheckpointBytes": 268435456
+    "progressBucketPercent": 100,
+    "maximumCheckpoints": 8,
+    "maximumCheckpointFileBytes": 16777216,
+    "maximumCheckpointBytes": 67108864
   }
 }

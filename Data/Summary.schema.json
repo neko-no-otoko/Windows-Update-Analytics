@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:win11upgradediag:summary:2.0.0",
-  "title": "Windows Update Analytics fact-only summary",
-  "description": "Stable fleet-ingestion contract for a finalized Win11UpgradeDiag v2.0 run.",
+  "title": "WUPA fact-only summary",
+  "description": "Stable external-review contract for a finalized Windows Update Performance Analyzer 3.x run.",
   "type": "object",
   "required": [
     "SchemaVersion",

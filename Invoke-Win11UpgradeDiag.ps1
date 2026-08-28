@@ -1,21 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Auto', 'Preflight', 'Resume', 'Finalize', 'Forensic', 'Disarm')]
-    [string]$Mode = 'Auto',
-
-    [ValidatePattern('^\d{2}H\d$')]
-    [string]$TargetVersion = '25H2',
-
-    [string]$OutputPath,
-    [string]$CopyTo,
-    [string]$MediaPath,
-    [switch]$AcceptWindowsEula,
-    [switch]$IncludeLargeDumps,
-    [switch]$NoInternet,
-    [switch]$NoSetupHooks,
-
-    [ValidateRange(1, 365)]
-    [int]$ArmDays = 30,
+    [ValidateSet('Start', 'Resume', 'Finish', 'Analyze', 'Cancel')]
+    [string]$Action = 'Start',
 
     [switch]$NoOpen,
 
@@ -25,15 +11,30 @@ param(
     [ValidateRange(0, 600)]
     [int]$DelaySeconds = 0,
 
-    # Internal launcher diagnostic. The CMD launcher passes a machine-readable
-    # location so failures before Collector.log exists are never silent.
+    # Internal GUI diagnostic so failures before Collector.log exists are durable.
     [string]$BootstrapLogPath
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$toolVersion = '2.2.1'
+$toolVersion = '3.0.0'
 $toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$TargetVersion = '25H2'
+$OutputPath = $null
+$CopyTo = $null
+$MediaPath = $null
+$AcceptWindowsEula = $false
+$IncludeLargeDumps = $false
+$NoInternet = $false
+$NoSetupHooks = $false
+$ArmDays = 30
+$Mode = switch ($Action) {
+    'Start'   { 'Preflight' }
+    'Resume'  { 'Resume' }
+    'Finish'  { 'Finalize' }
+    'Analyze' { 'Forensic' }
+    'Cancel'  { 'Disarm' }
+}
 $context = $null
 $armedState = $null
 $state = $null
@@ -56,7 +57,7 @@ function Write-WudBootstrapLog {
     catch { }
 }
 
-Write-WudBootstrapLog -Level INFO -Message ("Entry point started. Version={0}; Mode={1}; PowerShell={2}; PID={3}; Elevated={4}" -f $toolVersion, $Mode, $PSVersionTable.PSVersion, $PID, $(try { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $false }))
+Write-WudBootstrapLog -Level INFO -Message ("Entry point started. Version={0}; Action={1}; PowerShell={2}; PID={3}; Elevated={4}" -f $toolVersion, $Action, $PSVersionTable.PSVersion, $PID, $(try { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $false }))
 
 function Enter-WudRunLock {
     param([Parameter(Mandatory = $true)][string]$RunPath)
@@ -97,13 +98,13 @@ try {
 }
 catch {
     Write-WudBootstrapLog -Level ERROR -Message ("Module load failed: {0}" -f $_.Exception.Message)
-    Write-Host "Win11UpgradeDiag modules could not be loaded: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "WUPA modules could not be loaded: $($_.Exception.Message)" -ForegroundColor Red
     exit 40
 }
 
 if (-not (Test-WudIsWindows)) {
     Write-WudBootstrapLog -Level ERROR -Message 'Unsupported operating system: Windows is required.'
-    Write-Host 'Win11UpgradeDiag must run on Windows.' -ForegroundColor Red
+    Write-Host 'WUPA must run on Windows.' -ForegroundColor Red
     exit 50
 }
 if ($PSVersionTable.PSVersion.Major -lt 5) {
@@ -113,7 +114,7 @@ if ($PSVersionTable.PSVersion.Major -lt 5) {
 }
 if (-not (Test-WudAdministrator)) {
     if (-not [Environment]::UserInteractive) {
-        Write-Host 'Win11UpgradeDiag requires an elevated administrator session.' -ForegroundColor Red
+        Write-Host 'WUPA requires an elevated administrator session.' -ForegroundColor Red
         exit 50
     }
     try {
@@ -123,7 +124,7 @@ if (-not (Test-WudAdministrator)) {
         foreach ($token in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $MyInvocation.MyCommand.Path)) {
             $null = $elevationArguments.Add((ConvertTo-WudCommandLineArgument -Value ([string]$token)))
         }
-        foreach ($name in @('Mode', 'TargetVersion', 'OutputPath', 'CopyTo', 'MediaPath', 'AcceptWindowsEula', 'IncludeLargeDumps', 'NoInternet', 'NoSetupHooks', 'ArmDays', 'NoOpen', 'RunId', 'DelaySeconds', 'BootstrapLogPath')) {
+        foreach ($name in @('Action', 'NoOpen', 'RunId', 'DelaySeconds', 'BootstrapLogPath')) {
             if (-not $PSBoundParameters.ContainsKey($name)) { continue }
             $value = $PSBoundParameters[$name]
             if ($value -is [Management.Automation.SwitchParameter]) {
@@ -145,16 +146,14 @@ if (-not (Test-WudAdministrator)) {
 }
 
 try {
-    if ($Mode -eq 'Auto') { $Mode = Resolve-WudAutomaticMode -ToolRoot $toolRoot -TargetVersion $TargetVersion }
-    elseif ($Mode -eq 'Preflight' -and (Get-WudActiveRunState)) {
-        Write-Host 'An armed Win11UpgradeDiag run already exists; resuming it instead of creating duplicate persistence.'
-        $Mode = 'Resume'
+    if ($Mode -eq 'Preflight' -and (Get-WudActiveRunState)) {
+        throw 'WUPA is already tracking an update on this computer. Finish or cancel the active case before starting another.'
     }
 
     if ($Mode -eq 'Disarm') {
         $state = Get-WudActiveRunState
         if (-not $state) {
-            Write-Host 'No active Win11UpgradeDiag run is armed.'
+            Write-Host 'No active WUPA case is being tracked.'
             exit 0
         }
         $context = New-WudRunContext -ToolRoot $toolRoot -ToolVersion $toolVersion -RunId $state.RunId -RunPath $state.RunPath -OutputPath $state.OutputPath -Mode 'Disarm' -PhaseLabel 'Disarm' -TargetVersion $state.TargetVersion -CopyTo $state.CopyTo -MediaPath $null -AcceptWindowsEula $false -IncludeLargeDumps ([bool]$state.IncludeLargeDumps) -NoInternet ([bool]$state.NoInternet) -NoSetupHooks ([bool]$state.NoSetupHooks) -ArmDays $ArmDays
@@ -183,12 +182,12 @@ try {
             $candidateRunPath = Join-Path (Get-WudProgramDataRoot) ("Runs\{0}" -f $RunId)
             if (Test-Path -LiteralPath $candidateRunPath) { $state = Get-WudRunState -RunPath $candidateRunPath }
         }
-        if (-not $state) { throw "$Mode was requested, but no matching armed run state was found. Use Forensic for a one-shot collection." }
+        if (-not $state) { throw "$Action was requested, but no matching tracked case was found. Use Analyze for an after-the-fact collection." }
         if ($RunId -and $state.RunId -ne $RunId) { throw "Active run '$($state.RunId)' does not match requested run '$RunId'." }
         $TargetVersion = [string]$state.TargetVersion
         $context = New-WudRunContext -ToolRoot $toolRoot -ToolVersion $toolVersion -RunId $state.RunId -RunPath $state.RunPath -OutputPath $state.OutputPath -Mode $Mode -PhaseLabel $Mode -TargetVersion $TargetVersion -CopyTo $state.CopyTo -MediaPath $null -AcceptWindowsEula $false -IncludeLargeDumps ([bool]$state.IncludeLargeDumps) -NoInternet ([bool]$state.NoInternet) -NoSetupHooks ([bool]$state.NoSetupHooks) -ArmDays $ArmDays
         try { $runLock = Enter-WudRunLock -RunPath $context.RunPath }
-        catch { Write-Host 'Automatic post-reboot finalization or another Win11UpgradeDiag process is already handling this run. Wait for the active pass to finish; do not delete State\run.lock.'; exit 10 }
+        catch { Write-Host 'Automatic post-reboot finalization or another WUPA process is already handling this run. Wait for the active pass to finish; do not delete State\run.lock.'; exit 10 }
         if ([string]$state.Status -eq 'AwaitingInteractiveCopy') {
             if (-not (Test-WudInteractiveUser)) {
                 Write-WudLog -Context $context -Level INFO -Message 'The diagnostic report is complete and is waiting for an interactive technician token to perform the requested UNC copy.'
@@ -273,16 +272,14 @@ try {
         if ([string]::IsNullOrWhiteSpace($OutputPath)) {
             $OutputPath = Get-WudPublicDocumentsPath
         }
-        if ($OutputPath -match '^\\\\') { throw '-OutputPath must be a local folder. Use -CopyTo for a UNC destination.' }
-        if (-not [string]::IsNullOrWhiteSpace($CopyTo) -and $CopyTo -notmatch '^\\\\') { throw '-CopyTo must be a UNC folder such as \\server\share\folder.' }
-        $leaf = 'Win11UpgradeDiag-{0}-{1}' -f $env:COMPUTERNAME, $RunId
+        $leaf = 'WUPA-{0}-{1}' -f $env:COMPUTERNAME, $RunId
         $finalOutput = Join-Path ([IO.Path]::GetFullPath($OutputPath)) $leaf
         $phaseLabel = if ($Mode -eq 'Preflight') { 'Preflight' } else { 'Forensic' }
         $context = New-WudRunContext -ToolRoot $toolRoot -ToolVersion $toolVersion -RunId $RunId -RunPath $runPath -OutputPath $finalOutput -Mode $Mode -PhaseLabel $phaseLabel -TargetVersion $TargetVersion -CopyTo $CopyTo -MediaPath $MediaPath -AcceptWindowsEula ([bool]$AcceptWindowsEula) -IncludeLargeDumps ([bool]$IncludeLargeDumps) -NoInternet ([bool]$NoInternet) -NoSetupHooks ([bool]$NoSetupHooks) -ArmDays $ArmDays
         $runLock = Enter-WudRunLock -RunPath $context.RunPath
     }
 
-    Write-WudLog -Context $context -Level INFO -Message "Win11UpgradeDiag $toolVersion starting in $Mode mode for target $TargetVersion."
+    Write-WudLog -Context $context -Level INFO -Message "WUPA $toolVersion starting action $Action for target $TargetVersion."
     Write-WudLog -Context $context -Level WARN -Message 'Outputs are full-fidelity and sensitive. No repair or upgrade action will be executed.'
 
     try {
@@ -447,7 +444,7 @@ catch {
         }
         try {
             $failurePath = Join-Path $context.OutputPath 'Failure.txt'
-            Write-WudText -Path $failurePath -Text ("Win11UpgradeDiag encountered a fatal tool failure.`r`n`r`n$detail`r`n`r`n$($_ | Out-String)")
+            Write-WudText -Path $failurePath -Text ("WUPA encountered a fatal tool failure.`r`n`r`n$detail`r`n`r`n$($_ | Out-String)")
         }
         catch { }
     }

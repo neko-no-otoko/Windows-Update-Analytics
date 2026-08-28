@@ -1,149 +1,82 @@
-# Windows VM acceptance checklist
+# WUPA Windows VM acceptance checklist
 
-Version 2.1 acceptance must validate the persistent recorder, explicit operator finalization, fact-only engine, contamination boundary, and explicit outcome/provenance model; v1.0 causal-rule expectations are retained only as regression fixtures and are not the default runtime behavior.
+Run this matrix before general deployment. Record the WUPA executable SHA-256, architecture, Windows edition/language/build/UBR, update source, and runtime for each case.
 
-Fixture and parser tests are necessary but not sufficient. Complete this checklist on isolated Windows VMs before expanding beyond a controlled pilot. Record the bundle SHA-256, tool version, VM snapshot, Windows edition/language/build/UBR, architecture, update source, security agents, and observed runtime for every case.
+## Platforms
 
-## Platform matrix
+- [ ] Windows 11 23H2 x64 → 25H2 success
+- [ ] Windows 11 23H2 x64 → 25H2 failure/rollback
+- [ ] Windows 11 24H2 x64 → 25H2
+- [ ] Windows 11 25H2 x64 after-the-fact analysis
+- [ ] Windows 11 ARM64 source and target where available
+- [ ] One non-English Windows 11 device
+- [ ] WUfB/Intune, WSUS, ConfigMgr/co-managed, and unmanaged sources as applicable
 
-| Source | Architecture | Minimum validation |
-|---|---|---|
-| Windows 11 23H2 | x64 | Preflight, clean feature upgrade to 25H2, rollback/failure fixture, forensic run |
-| Windows 11 24H2 | x64 | Preflight, 25H2 enablement path, success/resume, forensic run |
-| Windows 11 25H2 | x64 | Current-target detection, forensic rerun, no false blocker from historical logs |
-| Windows 11 23H2/24H2 | ARM64 | All inventory/command fallbacks, matching ARM64 media scan, persistence |
-| Windows 11 non-English | x64 | Structured parsing, localized free-text degradation, HTML encoding |
+## Application and package
 
-Test Pro and Enterprise where deployment policy differs. Include Microsoft Update/WUfB, WSUS, Intune, ConfigMgr/co-management, and an unmanaged baseline as applicable to the organization.
+- [ ] x64 and ARM64 EXEs start, request UAC, display the WUPA icon/name, and require no parameters.
+- [ ] The main window exposes one state-appropriate primary action and no settings panel.
+- [ ] The EXE verifies the embedded manifest before loading PowerShell.
+- [ ] Tampering with an extracted runtime file prevents execution.
+- [ ] AppLocker/WDAC/Smart App Control/AllSigned denial remains visible and WUPA attempts no bypass.
+- [ ] A legacy v2 active pointer blocks a new v3 case with clear guidance.
 
-## Package and launcher
+## Start tracking
 
-- [ ] Extracted ZIP contains all documented runtime, data, assets, tests, and docs.
-- [ ] `BundleManifest.sha256` verifies on a pristine extraction.
-- [ ] Editing a covered module causes exit `40` before collection.
-- [ ] Adding `Zone.Identifier` to the entry point and every `.psm1` is detected before module loading; one confirmed preparation removes every marker and the launcher continues.
-- [ ] Cancelling preparation changes no marker and starts no diagnostic run.
-- [ ] `Prepare-Win11UpgradeDiag.cmd -Apply` refuses to remove markers when any manifested file has changed.
-- [ ] Group Policy `RemoteSigned` succeeds after preparation; `AllSigned` and `Restricted` stop with an explicit signed-deployment message and no policy change.
-- [ ] AppLocker or WDAC denial remains a visible policy block; the launcher does not attempt a bypass.
-- [ ] Double-click launcher selects 64-bit Windows PowerShell 5.1 and prompts for UAC.
-- [ ] Process execution-policy bypass does not alter LocalMachine or CurrentUser policy.
-- [ ] Non-admin direct invocation exits `50` with a useful message.
-- [ ] Unsupported Windows version or non-Windows execution exits `50`.
-- [ ] Paths containing spaces and non-ASCII characters work.
+- [ ] **Start tracking the 25H2 update** creates `%ProgramData%\WUPA\ActiveRun.json` and a run folder.
+- [ ] The GUI does not say ready until the recorder task is Running and owns its lock.
+- [ ] Start creates no final `Report.html` or evidence archive.
+- [ ] Recorder samples every 60 seconds and restarts on boot/process failure.
+- [ ] The GUI can close without stopping recording.
+- [ ] Update progress and Delivery Optimization byte/source counters appear in JSONL or carry explicit provider errors.
+- [ ] At most eight state checkpoints are produced; each is bounded and contains no duplicate EVTX/WU/USO/DO trees.
 
-## Core scenarios
+## Scope safeguards
 
-- [ ] A WUA-owned feature update with matching Setup/BlueBox evidence passes every attempt gate and is the only setup source in the included timeline.
-- [ ] Fresh-imaging `Windows\Panther` logs are classified `InitialDeploymentOrImaging`, even when they mention Windows Update or the target build.
-- [ ] Media `/Compat ScanOnly` records are classified `DiagnosticCompatibilityScan` and never appear as a real upgrade attempt.
-- [ ] ConfigMgr/media feature upgrades with an explicit non-Windows-Update owner remain `NonWindowsUpdateFeatureUpgrade`.
-- [ ] Ambiguous Setup logs remain `UnclassifiedSetupEvidence` rather than being promoted by timestamp proximity.
+- [ ] Fresh imaging evidence under `Windows\Panther` is not copied or promoted into the update attempt.
+- [ ] `$WINDOWS.~BT`, rollback, hook copies, and `Windows.old` candidates retain exact source/time/build gates.
+- [ ] Scan-only, imaging, general servicing, and non-Windows-Update candidates remain excluded/context-only.
+- [ ] Unrelated Delivery Optimization traffic is never identified as the 25H2 payload without Windows Update ownership evidence.
 
-- [ ] Clean preflight produces complete factual coverage, outcome `Monitoring Armed`, and exit `0` without claiming readiness.
-- [ ] Media compatibility `0xC1900210` is retained as a source-reported scan-only fact and never starts installation.
-- [ ] Application, disk-space, safeguard, policy, connectivity, servicing, driver, migration, and crash records preserve exact values/codes/evidence without asserting cause.
-- [ ] `0xC1900101 - 0x20017` produces an observed failure line plus a decoded SafeOS/Boot fact, but no inferred driver name.
-- [ ] A transition observed from the preflight build to 25H2 produces `Upgrade Succeeded`; a freshly inspected 25H2 device with no observed transition produces `Target OS Present`, never `Unknown`.
-- [ ] An owned rollback marker plus a validated Windows Update attempt produces `Rolled Back` and exit `20`.
-- [ ] Several setup candidates remain independently hashed/classified; none is merged or promoted by proximity alone.
-- [ ] Missing Windows.old or cleaned Panther data becomes an explicit coverage limitation.
+## Cross-reboot completion
 
-## Persistence and idempotency
+- [ ] Recorder and resume tasks run as SYSTEM after reboot.
+- [ ] Resume defers while Setup is active.
+- [ ] An ordinary reboot without a terminal signal does not finalize.
+- [ ] Success, rollback, and terminal failure trigger one delayed final collection.
+- [ ] Existing SetupConfig is restored byte-for-byte when unchanged.
+- [ ] Later administrator SetupConfig edits are preserved while WUPA-owned entries are removed.
+- [ ] Automatic completion removes the run's recorder/resume tasks and WUPA-owned hooks.
 
-- [ ] A new interactive run without `-OutputPath` finalizes every report, export, log, archive, and manifest beneath `%PUBLIC%\Documents\Win11UpgradeDiag-<Computer>-<RunId>`.
-- [ ] A SYSTEM resume creates the final report at the exact output path saved by Preflight.
-- [ ] An explicit local `-OutputPath` overrides the Public Documents default, while an older armed run retains its previously saved path.
-- [ ] Preflight copies runtime/state to ProgramData and applies the expected restricted ACL.
-- [ ] GUI starts without parameters, requests UAC, extracts its embedded payload, and verifies `BundleManifest.sha256` before launching PowerShell.
-- [ ] Preflight creates `State\preflight-status.json` with `FinalReportCreated=false` and does not create the Public Documents result folder or any final report/archive artifact.
-- [ ] GUI verifies `ActiveRun.json` and displays **Monitoring is armed** instead of offering or opening a baseline report.
-- [ ] x64 GUI runs on x64 Windows 11 and the ARM64 build runs on native ARM64 Windows 11.
-- [ ] `Recorder-<RunId>` starts immediately, samples at the configured 60-second interval, and restarts after task/process failure.
-- [ ] Each JSONL sample is independently parseable; a deliberately truncated final line is reported without losing prior records.
-- [ ] State/build/boot/10-percent-progress changes create bounded native checkpoints and unchanged samples do not create duplicate checkpoints.
-- [ ] DO status, peers, current/month performance, configuration, HTTP/peer/Connected Cache counters, progress, caller, and source URL are present or carry an explicit provider failure/unavailable state.
-- [ ] Unrelated Delivery Optimization traffic is not promoted to a 25H2 download; Windows Update transport ownership remains distinct from feature-update attempt validation.
-- [ ] SYSTEM startup task runs after success and after rollback.
-- [ ] Three-minute delayed resume does not collect while Setup is still active.
-- [ ] An ordinary reboot without a target-build transition, hook marker, or newer Setup evidence does not finalize the run.
-- [ ] Daily fallback resumes when the first startup trigger is missed.
-- [ ] Hook scripts return immediately and never delay OOBE or rollback.
-- [ ] Existing nonconflicting SetupConfig bytes are restored exactly after cleanup.
-- [ ] Each conflicting SetupConfig key is skipped while nonconflicting keys remain eligible.
-- [ ] An administrator edit made after arming is preserved; cleanup removes only owned values.
-- [ ] `-NoSetupHooks` creates no SetupConfig entries but retains task-based follow-up.
-- [ ] Repeated `Auto` invocation does not create duplicate tasks, hooks, or run ownership.
-- [ ] Repeated reboot does not repeatedly finalize an already completed run.
-- [ ] Expiry removes persistence and retains diagnostic artifacts.
-- [ ] `Finalize` records its operator override, terminal-signal evaluation, expiry state, and Setup-active state before stopping the recorder.
-- [ ] `Finalize` writes a forced `OperatorFinalizationBoundary` checkpoint, produces the full final artifacts, removes owned persistence, and does not invent a terminal outcome.
-- [ ] `Finalize` while Setup is active produces a factual mid-flight report and explicit collection gaps where sources remain locked.
-- [ ] A failed `Finalize` pass restarts the recorder and leaves the run retryable.
-- [ ] `Disarm` removes only owned persistence and retains evidence.
+## Manual finish and cancel
 
-## Active diagnostic safety
+- [ ] **Finish and create report** stops the recorder, writes an operator boundary, builds artifacts, and cleans owned persistence.
+- [ ] Finishing mid-flight reports the observed state without inventing success/failure.
+- [ ] A finalization failure restarts the recorder and leaves the case retryable.
+- [ ] A held run disables duplicate finalization and displays the newest `Collector.log` status.
+- [ ] **Cancel tracking** removes owned persistence, creates no report, and retains staged evidence.
+- [ ] Expiry performs the same owned cleanup and retains evidence.
 
-- [ ] Raw evidence copy finishes before DISM, SFC, Appraiser, media scan, and SetupDiag start.
-- [ ] DISM ScanHealth writes to the run-owned `CurrentDiagnostics` log path.
-- [ ] SetupDiag receives only the selected WindowsBT/Rollback/Windows.old/SetupCopyLogs source and never the whole evidence root.
-- [ ] A later capture of earlier tool-generated CBS/Appraiser records remains servicing/tool context and cannot enter the upgrade timeline.
+## Focused collector
 
-- [ ] DISM uses `/ScanHealth`, never `/RestoreHealth`.
-- [ ] SFC uses `/verifyonly`, never repair mode.
-- [ ] No CHKDSK repair, cache deletion, update installation, driver removal, or safeguard bypass occurs.
-- [ ] Compatibility Appraiser timeout is bounded and recorded.
-- [ ] SetupDiag download rejects an invalid or non-Microsoft Authenticode signer.
-- [ ] SetupDiag invocation contains `/NoTel` and targets only the selected copied upgrade-style source.
-- [ ] Media validation rejects mismatched target family/architecture and missing EULA acceptance.
-- [ ] Setup invocation contains `/compat scanonly` and no install continuation path.
-- [ ] Setup compatibility scan explicitly disables Dynamic Update.
-- [ ] Collector does not use `Win32_Product`.
-- [ ] Collector never assigns drive letters, takes ownership, or loosens source ACLs.
+- [ ] No installed-software/AppX/service/security-product sweep runs.
+- [ ] No DISM ScanHealth, SFC, Appraiser refresh, media scan, package/feature enumeration, MDM report, gpresult, dxdiag, msinfo, WER sweep, or full MEMORY.DMP hash/copy runs.
+- [ ] Required focused native logs and event channels are present or explicitly marked missing/locked.
+- [ ] Delivery Optimization status, peers, current/month performance, configuration, HTTP/peer/Connected Cache counters, and bounded readable records are present or explicitly unavailable.
+- [ ] SetupDiag download rejects non-Microsoft hosts/signers and invocation includes `/NoTel` with scoped input.
 
-## Degraded operation
+## Outputs
 
-- [ ] `-NoInternet` performs local fact processing without public calls.
-- [ ] Missing or stale SetupDiag is reported without preventing fact/report generation.
-- [ ] Locked logs, disabled channels, and access denial are recorded as gaps.
-- [ ] Insufficient ProgramData or output capacity produces a materially incomplete report where appropriate.
-- [ ] Timed-out DISM, SFC, Appraiser, WU conversion, SetupDiag, and media scan terminate cleanly.
-- [ ] Failed UNC copy preserves a valid local result and credentials are never stored.
-- [ ] An unavailable UNC target times out within the configured share-copy limit and remains safe to retry.
-- [ ] Large `MEMORY.DMP` is metadata/hash only by default.
-- [ ] `-IncludeLargeDumps` checks capacity and records a failed/oversized copy instead of silently omitting it.
+- [ ] Final output is `%PUBLIC%\Documents\WUPA-<Computer>-<RunId>`.
+- [ ] `Report.html`, `ReviewBundle.zip`, `Evidence.zip`, normalized JSON/CSV, `Collector.log`, manifests, and checksums exist.
+- [ ] `ReviewBundle.zip` and `Evidence.zip` reopen and hashes validate.
+- [ ] Every included fact resolves to evidence; excluded candidates show their exact gate failure.
+- [ ] HTML has no remote requests, passes CSP, escapes collected text, supports keyboard operation, print/PDF, dark/light mode, and 200% zoom.
+- [ ] A freshly inspected 25H2 device reports target presence rather than `Unknown` while keeping deployment source unattributed when evidence is absent.
 
-## Output contract and report QA
+## Pilot gate
 
-- [ ] `ReviewBundle.zip` reopens and contains all required JSONL/CSV, scope, coverage, excerpt, prompt, and hash-manifest files.
-- [ ] The fact-only HTML contains no primary-cause ranking, confidence label, or executable recommendation.
-- [ ] `Findings.csv` is header-only and `Facts.csv` contains the v2 records.
-- [ ] Every fact evidence locator resolves to an indexed source or an explicitly recorded external/original source path.
-
-- [ ] All v2 final artifacts exist and are nonempty when applicable, including recorder summary, progress JSONL, state transitions, and checkpoints.
-- [ ] `Evidence.zip` reopens and all archived hashes match the manifest.
-- [ ] A staged evidence file with an absolute path longer than 260 characters is hashed and included in `Evidence.zip` under Windows PowerShell 5.1.
-- [ ] A broken or external reparse point is indexed as `ArchiveReparsePointSkipped`, is not followed, and creates no empty ZIP entry.
-- [ ] A regular file removed between evidence inventory and archive creation is recorded as `ArchiveSourceMissing` and creates no empty ZIP entry.
-- [ ] `Checksums.sha256` validates after local and UNC copies.
-- [ ] Every fact has an indexed evidence reference or an explicitly documented original-source locator.
-- [ ] `Summary.json` reports numeric schema `2` and semantic schema `2.0.0`, and round-trips through the fleet ingestion parser.
-- [ ] CSV opens in Excel without formula execution from collected values.
-- [ ] HTML contains no remote asset requests and satisfies its CSP.
-- [ ] Collected HTML/script-like text is escaped and cannot execute.
-- [ ] Search, sort, fact-type/category/scope filters, collapsible excerpts, and controls work by keyboard.
-- [ ] Dark/light modes, high contrast, zoom to 200%, mobile width, and print/PDF layout remain readable.
-- [ ] Outcome, fact type, inclusion, and exclusion remain understandable without color.
-- [ ] A report with thousands of evidence entries remains usable.
-- [ ] Timestamps remain ordered through a DST transition and retain UTC values.
-
-## Pilot exit criteria
-
-- [ ] No unexpected state mutation is observed across the full matrix.
-- [ ] No credential or prohibited secret collection is found in sampled outputs.
-- [ ] Explicit source-reported records remain distinct from observed free text and computed scope gates.
-- [ ] False inclusions/exclusions are documented as regression fixtures before gate adjustment.
-- [ ] Known-good and freshly imaged devices receive no causal or readiness claims.
-- [ ] Known-failed devices preserve the expected source-reported terminal code/phase and exact evidence chain.
-- [ ] Help desk and engineering reviewers can reproduce every fact from its source reference.
-- [ ] A 25–50 device ring completes before general technician deployment.
+- [ ] No unexpected state mutation or prohibited secret collection is found.
+- [ ] Known-good and known-failed cases preserve expected timestamps/codes without causal invention.
+- [ ] Reviewers can reproduce every displayed fact from its evidence reference.
+- [ ] Complete a 25–50 device ring before broad technician deployment.

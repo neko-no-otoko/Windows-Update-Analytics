@@ -2,7 +2,7 @@ Set-StrictMode -Version 2.0
 
 function Get-WudProgramDataRoot {
     if (-not $env:ProgramData) { throw 'ProgramData is unavailable.' }
-    return (Join-Path $env:ProgramData 'Win11UpgradeDiag')
+    return (Join-Path $env:ProgramData 'WUPA')
 }
 
 function Get-WudActiveStatePath {
@@ -138,11 +138,11 @@ function Install-WudRuntimeCopy {
     $sourceFull = [IO.Path]::GetFullPath($Context.ToolRoot).TrimEnd('\')
     $runtimeFull = [IO.Path]::GetFullPath($runtimeRoot).TrimEnd('\')
     if ($sourceFull -eq $runtimeFull) { return $runtimeRoot }
-    foreach ($file in @('Invoke-Win11UpgradeDiag.ps1', 'Watch-Win11Upgrade.ps1', 'Start-Win11UpgradeDiag.cmd', 'Prepare-Win11UpgradeDiag.cmd', 'BundleManifest.sha256', 'VERSION', 'README.md', 'CHANGELOG.md', 'NOTICE.md')) {
+    foreach ($file in @('Invoke-Win11UpgradeDiag.ps1', 'Watch-Win11Upgrade.ps1', 'BundleManifest.sha256', 'VERSION', 'NOTICE.md')) {
         $source = Join-Path $Context.ToolRoot $file
         if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $runtimeRoot $file) -Force }
     }
-    foreach ($folder in @('Modules', 'Data', 'Assets', 'docs', 'Tests')) {
+    foreach ($folder in @('Modules', 'Data', 'Assets')) {
         $source = Join-Path $Context.ToolRoot $folder
         $destination = Join-Path $runtimeRoot $folder
         if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction Stop }
@@ -166,7 +166,7 @@ function New-WudHookScripts {
     $markers = New-WudDirectory -Path (Join-Path $Context.RunPath 'State\Markers')
     $oobeMarker = Join-Path $markers 'post-oobe.marker'
     $rollbackMarker = Join-Path $markers 'post-rollback.marker'
-    $taskPath = "\Win11UpgradeDiag\$TaskName"
+    $taskPath = "\WUPA\$TaskName"
     $oobe = @"
 @echo off
 > "$oobeMarker" echo %DATE% %TIME% PostOOBE
@@ -193,13 +193,13 @@ function Get-WudTaskFolder {
     # slash on current Windows 11 builds even though ScheduledTasks cmdlets
     # require that slash in -TaskPath. Resume creates the folder first; a
     # subsequent recorder lookup must therefore use the canonical COM path.
-    $comPath = '\Win11UpgradeDiag'
+    $comPath = '\WUPA'
     try {
         return [pscustomobject]@{ Folder = $ScheduleService.GetFolder($comPath); Created = $false }
     }
     catch {
         try {
-            return [pscustomobject]@{ Folder = $RootFolder.CreateFolder('Win11UpgradeDiag'); Created = $true }
+            return [pscustomobject]@{ Folder = $RootFolder.CreateFolder('WUPA'); Created = $true }
         }
         catch {
             # A concurrent/preceding registration can win between lookup and
@@ -213,7 +213,7 @@ function Get-WudTaskFolder {
 function Install-WudResumeTask {
     param($Context, [string]$RuntimePath)
     $taskName = "Resume-$($Context.RunId)"
-    $taskPath = '\Win11UpgradeDiag\'
+    $taskPath = '\WUPA\'
     $folderCreated = $false
     $scheduleService = New-Object -ComObject 'Schedule.Service'
     $scheduleService.Connect()
@@ -222,7 +222,7 @@ function Install-WudResumeTask {
     $folderCreated = [bool]$folderResult.Created
     $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $script = Join-Path $RuntimePath 'Invoke-Win11UpgradeDiag.ps1'
-    $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode Resume -RunId "{1}" -NoOpen -DelaySeconds 180' -f $script, $Context.RunId
+    $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Action Resume -RunId "{1}" -NoOpen -DelaySeconds 180' -f $script, $Context.RunId
     $action = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments -WorkingDirectory $RuntimePath
     $startup = New-ScheduledTaskTrigger -AtStartup
     $daily = New-ScheduledTaskTrigger -Daily -At '03:00'
@@ -230,7 +230,7 @@ function Install-WudResumeTask {
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 6)
     try { Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action -Trigger @($startup, $daily) -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null }
     catch {
-        if ($folderCreated) { try { $rootFolder.DeleteFolder('Win11UpgradeDiag', 0) } catch { } }
+        if ($folderCreated) { try { $rootFolder.DeleteFolder('WUPA', 0) } catch { } }
         throw
     }
     return [pscustomobject]@{ TaskName = $taskName; TaskPath = $taskPath; FullName = "$taskPath$taskName"; FolderCreated = $folderCreated }
@@ -239,7 +239,7 @@ function Install-WudResumeTask {
 function Install-WudRecorderTask {
     param($Context, [string]$RuntimePath)
     $taskName = "Recorder-$($Context.RunId)"
-    $taskPath = '\Win11UpgradeDiag\'
+    $taskPath = '\WUPA\'
     $scheduleService = New-Object -ComObject 'Schedule.Service'
     $scheduleService.Connect()
     $rootFolder = $scheduleService.GetFolder('\')
@@ -594,7 +594,7 @@ function Restore-WudSetupConfig {
         $updatedText = [Regex]::Replace($updatedText, $pattern, '', [Text.RegularExpressions.RegexOptions]::Multiline)
     }
     Write-WudEncodedTextFileAtomic -Path $configPath -Text $updatedText -Encoding $fileInfo.Encoding -Preamble $fileInfo.Preamble
-    Write-WudLog -Context $Context -Level WARN -Message 'SetupConfig changed after arming; only Win11UpgradeDiag entries were removed to preserve later administrator changes.'
+    Write-WudLog -Context $Context -Level WARN -Message 'SetupConfig changed after tracking began; only WUPA-owned entries were removed to preserve later administrator changes.'
     return 'RemovedOwnedEntriesFromDivergedFile'
 }
 
@@ -625,7 +625,7 @@ function Remove-WudPersistence {
                     $service = New-Object -ComObject 'Schedule.Service'
                     $service.Connect()
                     $folder = $service.GetFolder($State.Task.TaskPath)
-                    if ($folder.GetTasks(0).Count -eq 0 -and $folder.GetFolders(0).Count -eq 0) { $service.GetFolder('\').DeleteFolder('Win11UpgradeDiag', 0) }
+                    if ($folder.GetTasks(0).Count -eq 0 -and $folder.GetFolders(0).Count -eq 0) { $service.GetFolder('\').DeleteFolder('WUPA', 0) }
                 }
                 catch { }
             }
